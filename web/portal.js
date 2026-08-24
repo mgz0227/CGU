@@ -20,12 +20,16 @@
     grades: [],
     schedule: [],
     announcements: [],
+    mailbox: [],
+    mailboxEmail: '',
+    mailboxUnread: 0,
     adminCourses: [],
     adminAnnouncements: [],
     adminAdmissions: [],
     adminStudents: [],
     adminGrades: [],
     adminSchedule: [],
+    adminMailbox: [],
     adminSiteContent: [],
     adminStats: {},
     toastTimer: 0
@@ -251,6 +255,25 @@
     location: value.location ?? value.room ?? value.classroom ?? ''
   });
 
+  const normalizeMailbox = (value = {}) => ({
+    ...value,
+    id: value.id ?? value.messageId ?? value.message_id ?? '',
+    senderName: value.senderName ?? value.sender_name ?? value.sender ?? 'CGU',
+    subject: String(value.subject ?? value.title ?? '').trim(),
+    body: String(value.body ?? value.message ?? value.content ?? '').trim(),
+    createdAt: value.createdAt ?? value.created_at ?? '',
+    readAt: value.readAt ?? value.read_at ?? '',
+    read: Boolean(value.read ?? value.isRead ?? value.readAt ?? value.read_at)
+  });
+
+  const normalizeAdminMailbox = (value = {}) => ({
+    ...normalizeMailbox(value),
+    recipientId: value.recipientId ?? value.recipient_id ?? '',
+    recipientName: value.recipientName ?? value.recipient_name ?? '',
+    recipientStudentId: value.recipientStudentId ?? value.recipient_student_id ?? '',
+    recipientEmail: value.recipientEmail ?? value.recipient_email ?? ''
+  });
+
   const showToast = (message) => {
     const toast = document.querySelector('[data-toast]');
     if (!toast) return;
@@ -395,6 +418,13 @@
       throw error;
     }
   };
+  const protectedResponse = async (path) => {
+    try { return await api(path); }
+    catch (error) {
+      if (isAuthError(error)) redirectToLogin();
+      throw error;
+    }
+  };
 
   const enrollmentIds = () => new Set(state.enrollments
     .filter((item) => String(item.status ?? item.enrollmentStatus ?? 'enrolled').toLowerCase() === 'enrolled')
@@ -506,6 +536,21 @@
     mini.innerHTML = state.schedule.slice(0, 3).map((entry) => `<div class="mini-class"><span><strong>${escapeHTML(localeValue({ zh: entry.courseNameZh, en: entry.courseNameEn }, entry.courseCode))}</strong><span>${escapeHTML(dayLabel(entry.day))} · ${escapeHTML(entry.location || entry.courseCode)}</span></span><time>${escapeHTML(entry.start)}</time></div>`).join('') || `<p class="empty-state">${escapeHTML(I18N.t('portal.noSchedule'))}</p>`;
   };
 
+  const renderMailbox = () => {
+    const address = document.querySelector('[data-mailbox-address]');
+    if (address) address.textContent = state.mailboxEmail || state.user?.studentEmail || '—';
+    document.querySelectorAll('[data-mailbox-unread]').forEach((node) => { node.textContent = String(state.mailboxUnread); });
+    const unreadLabel = document.querySelector('[data-mailbox-unread-label]');
+    if (unreadLabel) unreadLabel.textContent = state.mailboxUnread ? I18N.t('portal.unreadCount', { count: state.mailboxUnread }) : I18N.t('portal.allRead');
+    const list = document.querySelector('[data-mailbox-list]');
+    if (!list) return;
+    if (!state.mailbox.length) {
+      list.innerHTML = `<p class="empty-state">${escapeHTML(I18N.t('portal.noMailboxMessages'))}</p>`;
+      return;
+    }
+    list.innerHTML = state.mailbox.map((item) => `<article class="mailbox-item${item.read ? '' : ' is-unread'}"><div class="mailbox-item-heading"><div><span class="announcement-type">${escapeHTML(I18N.t('portal.sender'))}</span><h3>${escapeHTML(item.subject || '—')}</h3></div><time>${escapeHTML(formatDate(item.createdAt, true))}</time></div><p class="mailbox-sender">${escapeHTML(item.senderName || 'CGU')}</p><p class="mailbox-body">${escapeHTML(item.body).replace(/\n/g, '<br>')}</p><div class="mailbox-item-actions">${item.read ? `<span class="status-pill">${escapeHTML(I18N.t('portal.read'))}</span>` : `<button class="table-action" type="button" data-mailbox-read="${escapeHTML(item.id)}">${escapeHTML(I18N.t('portal.markRead'))}</button>`}</div></article>`).join('');
+  };
+
   const openAnnouncement = (id) => {
     const item = state.announcements.find((announcement) => String(announcement.id) === String(id));
     if (!item) return;
@@ -550,7 +595,7 @@
     state.grades = state.grades.map(normalizeGrade);
     state.schedule = state.schedule.map(normalizeSchedule).sort((a, b) => a.day - b.day || a.start.localeCompare(b.start));
     state.announcements = state.announcements.map(normalizeAnnouncement);
-    renderPortalMetrics(); renderCourses(); renderGrades(); renderSchedule(); renderAnnouncements(); renderMiniSchedule();
+    renderPortalMetrics(); renderCourses(); renderGrades(); renderSchedule(); renderAnnouncements(); renderMiniSchedule(); renderMailbox();
     I18N.apply();
     renderUserFields();
   };
@@ -561,6 +606,21 @@
     const type = document.querySelector('[data-course-type]');
     [search, term, type].forEach((control) => control?.addEventListener('input', renderCourses));
     document.querySelector('[data-course-list]')?.addEventListener('click', (event) => { const button = event.target.closest('[data-course-action]'); if (button) handleCourseAction(button); });
+    document.querySelector('[data-mailbox-list]')?.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-mailbox-read]');
+      if (!button) return;
+      button.disabled = true;
+      try {
+        await postJSON(`/mailbox/${encodeURIComponent(button.dataset.mailboxRead)}`, 'PATCH', { read: true });
+        state.mailbox = state.mailbox.map((item) => String(item.id) === String(button.dataset.mailboxRead) ? { ...item, read: true, readAt: new Date().toISOString() } : item);
+        state.mailboxUnread = state.mailbox.filter((item) => !item.read).length;
+        renderMailbox();
+        showToast(I18N.t('portal.mailboxMarkedRead'));
+      } catch (error) {
+        if (isAuthError(error)) redirectToLogin();
+        else { button.disabled = false; showToast(error.message || I18N.t('portal.operationError')); }
+      }
+    });
     document.addEventListener('click', (event) => { const button = event.target.closest('[data-open-announcement]'); if (button) openAnnouncement(button.dataset.openAnnouncement); });
     document.querySelector('[data-close-dialog]')?.addEventListener('click', () => document.querySelector('[data-announcement-dialog]')?.close?.());
     document.querySelector('[data-announcement-dialog]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) event.currentTarget.close?.(); });
@@ -573,18 +633,22 @@
     const refresh = document.querySelector('[data-refresh]');
     setButtonLoading(refresh, true);
     try {
-      const [courses, enrollments, grades, schedule, announcements] = await Promise.all([
+      const [courses, enrollments, grades, schedule, announcements, mailbox] = await Promise.all([
         resource('/courses', ['courses']),
         resource('/enrollments', ['enrollments', 'items']),
         resource('/grades', ['grades']),
         resource('/schedule', ['schedule', 'entries']),
-        resource('/announcements', ['announcements', 'items'])
+        resource('/announcements', ['announcements', 'items']),
+        protectedResponse('/mailbox')
       ]);
       state.courses = courses.map(normalizeCourse);
       state.enrollments = enrollments;
       state.grades = grades.map(normalizeGrade);
       state.schedule = schedule.map(normalizeSchedule);
       state.announcements = announcements.map(normalizeAnnouncement);
+      state.mailbox = listFrom(mailbox, ['messages', 'items']).map(normalizeMailbox);
+      state.mailboxEmail = mailbox?.email || state.user?.studentEmail || '';
+      state.mailboxUnread = Number.isFinite(Number(mailbox?.unread)) ? Number(mailbox.unread) : state.mailbox.filter((item) => !item.read).length;
       renderPortal();
     } catch (error) {
       if (!isAuthError(error)) showPageAlert(I18N.t('portal.loadError'));
@@ -636,6 +700,11 @@
       select.innerHTML = `<option value="">${escapeHTML(I18N.t('admin.selectCourse'))}</option>${courseOptions}`;
       if (state.adminCourses.some((item) => String(item.id) === String(current))) select.value = current;
     });
+    document.querySelectorAll('[data-admin-mailbox-student-options]').forEach((select) => {
+      const current = select.value;
+      select.innerHTML = `<option value="">${escapeHTML(I18N.t('admin.selectStudent'))}</option>${studentOptions}`;
+      if (state.adminStudents.some((item) => String(item.id) === String(current))) select.value = current;
+    });
   };
 
   const renderAdminStudents = () => {
@@ -680,6 +749,7 @@
     renderAdminStudents();
     renderAdminReferenceOptions();
     renderAdminAcademic();
+    renderAdminMailbox();
     renderSiteContent();
     I18N.apply();
   };
@@ -690,10 +760,17 @@
     list.innerHTML = state.adminAdmissions.length ? state.adminAdmissions.map((item) => `<article class="admin-admission-row"><div><span class="announcement-type">${escapeHTML(item.school || I18N.t('admin.admissionUndecided'))}</span><h3>${escapeHTML(item.name || '—')}</h3><p><a href="mailto:${escapeHTML(item.email)}">${escapeHTML(item.email)}</a></p></div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.createdAt, true))}</div><div class="admin-actions"><label class="visually-hidden" for="admission-status-${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.admissionStatus'))}</label><select id="admission-status-${escapeHTML(item.id)}" data-admission-status="${escapeHTML(item.id)}"><option value="pending"${item.status === 'pending' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionPending'))}</option><option value="reviewing"${item.status === 'reviewing' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionReviewing'))}</option><option value="contacted"${item.status === 'contacted' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionContacted'))}</option><option value="accepted"${item.status === 'accepted' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionAccepted'))}</option><option value="rejected"${item.status === 'rejected' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionRejected'))}</option></select></div></article>`).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noAdmissions'))}</p>`;
   };
 
+  const renderAdminMailbox = () => {
+    const list = document.querySelector('[data-admin-mailbox-list]');
+    document.querySelectorAll('[data-admin-mailbox-count]').forEach((node) => { node.textContent = String(state.adminMailbox.length); });
+    if (!list) return;
+    list.innerHTML = state.adminMailbox.length ? state.adminMailbox.map((item) => `<article class="mailbox-item admin-mailbox-item${item.read ? '' : ' is-unread'}"><div class="mailbox-item-heading"><div><span class="announcement-type">${escapeHTML(item.recipientStudentId || item.recipientEmail || '—')}</span><h3>${escapeHTML(item.subject || '—')}</h3></div><time>${escapeHTML(formatDate(item.createdAt, true))}</time></div><p class="mailbox-sender">${escapeHTML(item.recipientName || '—')} · ${escapeHTML(item.recipientEmail || '—')}</p><p class="mailbox-body">${escapeHTML(item.body).replace(/\n/g, '<br>')}</p><div class="mailbox-item-actions"><span class="status-pill${item.read ? '' : ' is-progress'}">${escapeHTML(item.read ? I18N.t('admin.read') : I18N.t('admin.unread'))}</span></div></article>`).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noMailboxMessages'))}</p>`;
+  };
+
   const renderAdminLoadError = () => {
     const message = I18N.t('admin.loadError');
     document.querySelectorAll('[data-admin-course-list]').forEach((list) => { list.innerHTML = `<tr><td colspan="7" class="empty-state">${escapeHTML(message)}</td></tr>`; });
-    document.querySelectorAll('[data-admin-announcement-list], [data-admin-admission-list]').forEach((list) => { list.innerHTML = `<p class="empty-state">${escapeHTML(message)}</p>`; });
+    document.querySelectorAll('[data-admin-announcement-list], [data-admin-admission-list], [data-admin-mailbox-list]').forEach((list) => { list.innerHTML = `<p class="empty-state">${escapeHTML(message)}</p>`; });
     document.querySelectorAll('[data-admin-student-list], [data-admin-grade-list], [data-admin-schedule-list]').forEach((list) => { list.innerHTML = `<tr><td colspan="7" class="empty-state">${escapeHTML(message)}</td></tr>`; });
     document.querySelectorAll('[data-site-content-list]').forEach((list) => { list.innerHTML = `<tr><td colspan="4" class="empty-state">${escapeHTML(message)}</td></tr>`; });
   };
@@ -828,6 +905,30 @@
         item.status = previous;
         renderAdminAdmissions();
         if (isAuthError(error)) redirectToLogin(); else showToast(error.message || I18N.t('admin.error'));
+      }
+    });
+  };
+
+  const mailboxPayload = (form) => {
+    const values = Object.fromEntries(new FormData(form).entries());
+    return { studentId: values.studentId?.trim(), subject: values.subject?.trim(), body: values.body?.trim() };
+  };
+
+  const handleAdminMailbox = () => {
+    const form = document.querySelector('[data-mailbox-form]');
+    if (!form) return;
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!form.checkValidity()) { showToast(I18N.t('admin.required')); form.reportValidity(); return; }
+      try {
+        const result = await adminRequest('/admin/mailbox', 'POST', mailboxPayload(form));
+        state.adminMailbox.unshift(normalizeAdminMailbox(result?.message || result));
+        form.reset();
+        renderAdmin();
+        showToast(I18N.t('admin.messageSent'));
+      } catch (error) {
+        if (isAuthError(error)) redirectToLogin();
+        else showToast(error.message || I18N.t('admin.error'));
       }
     });
   };
@@ -987,13 +1088,14 @@
 
   const loadAdminData = async () => {
     try {
-      const [courses, announcements, admissions, students, grades, schedule, stats] = await Promise.all([
+      const [courses, announcements, admissions, students, grades, schedule, mailbox, stats] = await Promise.all([
         resource('/admin/courses', ['courses']),
         resource('/admin/announcements', ['announcements', 'items']),
         optionalResource('/admin/admissions', ['applications', 'admissions', 'items']),
         optionalResource('/admin/students', ['students', 'items']),
         optionalResource('/admin/grades', ['grades', 'items']),
         optionalResource('/admin/schedule', ['schedule', 'entries', 'items']),
+        optionalResource('/admin/mailbox', ['messages', 'items']),
         api('/admin/stats')
       ]);
       const content = await resource('/admin/site-content', ['content', 'items']);
@@ -1002,14 +1104,14 @@
         const existing = managed.get(item.key) || {};
         managed.set(item.key, { ...existing, ...item, zh: item.zh || existing.zh || '', en: item.en || existing.en || '' });
       });
-      state.adminCourses = (Array.isArray(courses) ? courses : []).map(normalizeCourse); state.adminAnnouncements = (Array.isArray(announcements) ? announcements : []).map(normalizeAnnouncement); state.adminAdmissions = (Array.isArray(admissions) ? admissions : []).map(normalizeAdmission); state.adminStudents = (Array.isArray(students) ? students : []).map(normalizeAdminStudent); state.adminGrades = (Array.isArray(grades) ? grades : []).map(normalizeAdminGrade); state.adminSchedule = (Array.isArray(schedule) ? schedule : []).map(normalizeAdminSchedule); state.adminSiteContent = [...managed.values()].filter((item) => item.key).sort((a, b) => a.key.localeCompare(b.key)); state.adminStats = stats || {}; renderAdmin();
+      state.adminCourses = (Array.isArray(courses) ? courses : []).map(normalizeCourse); state.adminAnnouncements = (Array.isArray(announcements) ? announcements : []).map(normalizeAnnouncement); state.adminAdmissions = (Array.isArray(admissions) ? admissions : []).map(normalizeAdmission); state.adminStudents = (Array.isArray(students) ? students : []).map(normalizeAdminStudent); state.adminGrades = (Array.isArray(grades) ? grades : []).map(normalizeAdminGrade); state.adminSchedule = (Array.isArray(schedule) ? schedule : []).map(normalizeAdminSchedule); state.adminMailbox = (Array.isArray(mailbox) ? mailbox : []).map(normalizeAdminMailbox); state.adminSiteContent = [...managed.values()].filter((item) => item.key).sort((a, b) => a.key.localeCompare(b.key)); state.adminStats = stats || {}; renderAdmin();
     } catch (error) { if (!isAuthError(error)) { showPageAlert(I18N.t('admin.error')); renderAdminLoadError(); } }
   };
 
   const initAdmin = async () => {
     setupHashNav('admin');
     if (!await ensureSession('admin')) return;
-    handleAdminCourseForm(); handleAdminAnnouncementForm(); handleAdminSiteContent(); handleAdminAdmissions(); handleAdminStudents(); handleAdminGrades(); handleAdminSchedule();
+    handleAdminCourseForm(); handleAdminAnnouncementForm(); handleAdminSiteContent(); handleAdminAdmissions(); handleAdminMailbox(); handleAdminStudents(); handleAdminGrades(); handleAdminSchedule();
     await waitForManagedContent();
     await loadAdminData();
     window.addEventListener('cgu:localechange', renderAdmin);

@@ -25,11 +25,12 @@
           <a href="#admin-academic" data-admin-nav="academic" data-i18n="admin.academic">成绩与课表</a>
           <a href="#admin-announcements" data-admin-nav="announcements" data-i18n="admin.announcements">公告管理</a>
           <a href="#admin-admissions" data-admin-nav="admissions" data-i18n="admin.admissions">招生申请</a>
+          <a href="#admin-mailbox" data-admin-nav="mailbox" data-i18n="admin.mailbox">校内邮箱</a>
           <a href="#admin-site-content" data-admin-nav="site-content" data-i18n="admin.siteContent">网站内容</a>
         </nav>
         <div class="portal-header-actions"><button class="portal-language" type="button" data-locale-toggle>English</button><span class="portal-user-chip" data-user-name>—</span><button class="portal-icon-button mobile-nav-toggle" type="button" aria-expanded="false" aria-controls="admin-mobile-nav" data-mobile-nav-toggle aria-label="打开菜单" data-i18n-attr="aria-label:nav.menu">☰</button><button class="portal-logout" type="button" data-logout data-i18n="nav.logout">退出登录</button></div>
       </div>
-      <nav class="portal-mobile-nav" id="admin-mobile-nav" aria-label="移动端导航" data-i18n-attr="aria-label:common.mobileNav" aria-hidden="true"><a href="#admin-overview" data-admin-nav="overview" data-i18n="admin.overview">总览</a><a href="#admin-courses" data-admin-nav="courses" data-i18n="admin.courses">课程管理</a><a href="#admin-students" data-admin-nav="students" data-i18n="admin.students">学生目录</a><a href="#admin-academic" data-admin-nav="academic" data-i18n="admin.academic">成绩与课表</a><a href="#admin-announcements" data-admin-nav="announcements" data-i18n="admin.announcements">公告管理</a><a href="#admin-admissions" data-admin-nav="admissions" data-i18n="admin.admissions">招生申请</a><a href="#admin-site-content" data-admin-nav="site-content" data-i18n="admin.siteContent">网站内容</a></nav>
+      <nav class="portal-mobile-nav" id="admin-mobile-nav" aria-label="移动端导航" data-i18n-attr="aria-label:common.mobileNav" aria-hidden="true"><a href="#admin-overview" data-admin-nav="overview" data-i18n="admin.overview">总览</a><a href="#admin-courses" data-admin-nav="courses" data-i18n="admin.courses">课程管理</a><a href="#admin-students" data-admin-nav="students" data-i18n="admin.students">学生目录</a><a href="#admin-academic" data-admin-nav="academic" data-i18n="admin.academic">成绩与课表</a><a href="#admin-announcements" data-admin-nav="announcements" data-i18n="admin.announcements">公告管理</a><a href="#admin-admissions" data-admin-nav="admissions" data-i18n="admin.admissions">招生申请</a><a href="#admin-mailbox" data-admin-nav="mailbox" data-i18n="admin.mailbox">校内邮箱</a><a href="#admin-site-content" data-admin-nav="site-content" data-i18n="admin.siteContent">网站内容</a></nav>
     </header>
 
     <main id="admin-main" class="portal-main portal-container">
@@ -61,6 +62,15 @@
         <div class="section-heading-inline"><div><p class="portal-kicker" data-i18n="admin.admissionKicker">ADMISSIONS OFFICE</p><h2 data-i18n="admin.admissions">招生申请</h2></div></div>
         <p class="admin-section-help" data-i18n="admin.admissionHelp">查看申请人的联系方式，并更新招生处理状态。</p>
         <div class="admin-announcement-list" data-admin-admission-list><p class="empty-state" data-i18n="common.loading">加载中…</p></div>
+      </section>
+
+      <section class="portal-section" id="admin-mailbox" data-admin-section="mailbox">
+        <div class="section-heading-inline"><div><p class="portal-kicker" data-i18n="admin.mailboxKicker">STUDENT SERVICES</p><h2 data-i18n="admin.mailbox">校内邮箱</h2></div></div>
+        <p class="admin-section-help" data-i18n="admin.mailboxHelp">向学生学校邮箱发送教务通知，学生登录后可在收件箱查看。</p>
+        <div class="admin-record-grid mailbox-admin-grid">
+          <div class="admin-record-panel"><div class="section-heading-inline"><div><h3 data-i18n="admin.composeMessage">撰写邮件</h3></div></div><form class="portal-form admin-form" data-mailbox-form novalidate><div class="form-grid"><label><span data-i18n="admin.recipient">收件学生</span><select name="studentId" required data-admin-mailbox-student-options></select></label><label><span data-i18n="admin.subject">主题</span><input name="subject" maxlength="200" required></label></div><label><span data-i18n="admin.messageBody">正文</span><textarea name="body" rows="8" maxlength="10000" required></textarea></label><div class="form-actions"><button class="portal-button portal-button-gold" type="submit" data-i18n="admin.sendMessage">发送邮件</button></div></form></div>
+          <div class="admin-record-panel"><div class="section-heading-inline"><div><h3 data-i18n="admin.sentMessages">发送记录</h3></div><span class="section-count" data-admin-mailbox-count>—</span></div><div class="mailbox-list admin-mailbox-list" data-admin-mailbox-list><p class="empty-state" data-i18n="common.loading">加载中…</p></div></div>
+        </div>
       </section>
 
       <section class="portal-section" id="admin-site-content" data-admin-section="site-content">

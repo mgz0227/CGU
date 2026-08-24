@@ -1,6 +1,6 @@
 # CGU security audit
 
-Audit date: 2026-08-24
+Audit date: 2026-08-25
 
 Scope: Go HTTP service, cookie authentication, MySQL adapter, and browser
 client code in `web/`. The audit follows the repository's Go and web
@@ -157,6 +157,19 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
 - Residual mitigation: use a proxy/WAF challenge and a shared rate-limit store
   when running multiple replicas; add operator notifications and retention
   limits before treating the queue as a regulated admissions record.
+
+### GO-MAILBOX-001: internal mailbox authorization and content handling (High, fixed)
+
+- Location: `mailbox.go`, `/api/mailbox`, and `/api/admin/mailbox`.
+- Evidence: only administrators can create messages; student reads and read-state
+  updates are matched to the authenticated recipient ID; student responses omit
+  internal recipient and sender identifiers. Subject/body lengths are bounded,
+  database writes are parameterized, and failed writes roll back in-memory state.
+- Impact: prevents cross-student mailbox disclosure and avoids treating message
+  bodies as executable HTML in the browser.
+- Residual mitigation: the current mailbox is intentionally provider-independent
+  and does not deliver to external SMTP. Add a separately audited mail provider
+  and outbound queue before enabling internet delivery or attachments.
 
 ## Deployment requirements
 

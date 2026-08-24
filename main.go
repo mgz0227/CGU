@@ -167,6 +167,37 @@ type ScheduleInput struct {
 	Teacher      string `json:"teacher"`
 }
 
+// Mailbox messages are internal CGU academic notices. They intentionally do
+// not model external SMTP credentials or transport details; deployment can
+// add an external connector later without changing student permissions.
+type MailboxMessage struct {
+	ID                 string `json:"id"`
+	RecipientID        string `json:"recipientId,omitempty"`
+	RecipientName      string `json:"recipientName,omitempty"`
+	RecipientStudentID string `json:"recipientStudentId,omitempty"`
+	RecipientEmail     string `json:"recipientEmail,omitempty"`
+	SenderID           string `json:"senderId,omitempty"`
+	SenderName         string `json:"senderName"`
+	Subject            string `json:"subject"`
+	Body               string `json:"body"`
+	CreatedAt          string `json:"createdAt"`
+	ReadAt             string `json:"readAt,omitempty"`
+}
+
+type MailboxInput struct {
+	StudentID  string `json:"studentId"`
+	StudentRef string `json:"student_id"`
+	Subject    string `json:"subject"`
+	Title      string `json:"title"`
+	Body       string `json:"body"`
+	Message    string `json:"message"`
+	Content    string `json:"content"`
+}
+
+type MailboxReadInput struct {
+	Read *bool `json:"read"`
+}
+
 type Announcement struct {
 	ID          string `json:"id"`
 	TitleZh     string `json:"titleZh"`
@@ -292,6 +323,7 @@ type Store struct {
 	schedule           []*ScheduleEntry
 	announcements      []*Announcement
 	admissions         []*AdmissionApplication
+	mailbox            []*MailboxMessage
 	siteContent        map[string]*SiteContent
 }
 
@@ -417,7 +449,7 @@ func (s *Store) resolveStudentLocked(value string) *User {
 		if user == nil || user.Role != "student" {
 			continue
 		}
-		if strings.EqualFold(user.ID, value) || strings.EqualFold(user.StudentID, value) || strings.EqualFold(user.Username, value) {
+		if strings.EqualFold(user.ID, value) || strings.EqualFold(user.StudentID, value) || strings.EqualFold(user.Username, value) || strings.EqualFold(user.Email, value) || strings.EqualFold(studentMailbox(user.StudentID, s.studentEmailDomain), value) {
 			return user
 		}
 	}
@@ -887,6 +919,16 @@ func defaultSiteContent() map[string]*SiteContent {
 		{Key: "portal.academicsKicker", Zh: "ACADEMICS", En: "ACADEMICS"},
 		{Key: "portal.campusKicker", Zh: "CAMPUS LIFE", En: "CAMPUS LIFE"},
 		{Key: "portal.accountKicker", Zh: "ACCOUNT", En: "ACCOUNT"},
+		{Key: "portal.mailbox", Zh: "校内邮箱", En: "Student mail"},
+		{Key: "portal.mailboxKicker", Zh: "STUDENT MAIL", En: "STUDENT MAIL"},
+		{Key: "portal.mailboxAddress", Zh: "你的学校邮箱", En: "Your university mailbox"},
+		{Key: "portal.unreadCount", Zh: "{count} 封未读邮件", En: "{count} unread messages"},
+		{Key: "portal.allRead", Zh: "全部已读", En: "All messages read"},
+		{Key: "portal.sender", Zh: "发件人", En: "From"},
+		{Key: "portal.read", Zh: "已读", En: "Read"},
+		{Key: "portal.markRead", Zh: "标记为已读", En: "Mark as read"},
+		{Key: "portal.noMailboxMessages", Zh: "暂无校内邮件。", En: "No university messages yet."},
+		{Key: "portal.mailboxMarkedRead", Zh: "邮件已标记为已读。", En: "Message marked as read."},
 		{Key: "portal.noticeType", Zh: "NOTICE", En: "NOTICE"},
 		{Key: "portal.creditsTarget", Zh: "本科阶段目标 120", En: "Undergraduate target 120"},
 		{Key: "portal.gradedCourses", Zh: "{count} 门已出分", En: "{count} graded courses"},
@@ -895,6 +937,19 @@ func defaultSiteContent() map[string]*SiteContent {
 		{Key: "admin.title", Zh: "教务管理台", En: "Academic administration"},
 		{Key: "admin.metaDescription", Zh: "CGU 原神大学教务管理后台", En: "China Genshin University administration portal"},
 		{Key: "admin.subtitle", Zh: "维护课程、公告与校园学术信息。", En: "Maintain courses, announcements, and academic information."},
+		{Key: "admin.mailbox", Zh: "校内邮箱", En: "Student mail"},
+		{Key: "admin.mailboxKicker", Zh: "STUDENT SERVICES", En: "STUDENT SERVICES"},
+		{Key: "admin.mailboxHelp", Zh: "向学生学校邮箱发送教务通知，学生登录后可在收件箱查看。", En: "Send academic notices to a student mailbox for review in the student portal."},
+		{Key: "admin.composeMessage", Zh: "撰写邮件", En: "Compose message"},
+		{Key: "admin.recipient", Zh: "收件学生", En: "Recipient"},
+		{Key: "admin.subject", Zh: "主题", En: "Subject"},
+		{Key: "admin.messageBody", Zh: "正文", En: "Message body"},
+		{Key: "admin.sendMessage", Zh: "发送邮件", En: "Send message"},
+		{Key: "admin.sentMessages", Zh: "发送记录", En: "Sent messages"},
+		{Key: "admin.read", Zh: "已读", En: "Read"},
+		{Key: "admin.unread", Zh: "未读", En: "Unread"},
+		{Key: "admin.noMailboxMessages", Zh: "暂无发送记录。", En: "No sent messages yet."},
+		{Key: "admin.messageSent", Zh: "邮件已发送。", En: "Message sent."},
 		{Key: "admin.coursesUnit", Zh: "COURSES", En: "COURSES"},
 		{Key: "admin.studentsUnit", Zh: "STUDENTS", En: "STUDENTS"},
 		{Key: "admin.sectionsUnit", Zh: "OPEN SECTIONS", En: "OPEN SECTIONS"},
@@ -1867,6 +1922,25 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.listSchedule(w, r)
+	case p == "/api/mailbox" && r.Method == http.MethodGet:
+		if !s.requireAuth(w, r) {
+			return
+		}
+		s.listMailbox(w, r)
+	case strings.HasPrefix(p, "/api/mailbox/"):
+		id := decodePathID(strings.TrimPrefix(p, "/api/mailbox/"))
+		if id == "" {
+			writeError(w, apiErr(http.StatusNotFound, "message_not_found", "message not found"))
+			return
+		}
+		if r.Method != http.MethodPatch && r.Method != http.MethodPut {
+			methodNotAllowed(w, http.MethodPatch, http.MethodPut)
+			return
+		}
+		if !s.requireAuth(w, r) {
+			return
+		}
+		s.markMailboxRead(w, r, id)
 	case p == "/api/announcements" && r.Method == http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "announcements": s.store.announcementsFor(s.currentUser(r), false)})
 	case p == "/api/site-content" && r.Method == http.MethodGet:
@@ -1911,6 +1985,17 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stats": s.store.stats()})
+	case p == "/api/admin/mailbox":
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		if r.Method == http.MethodGet {
+			s.listAdminMailbox(w, r)
+		} else if r.Method == http.MethodPost {
+			s.sendAdminMailbox(w, r)
+		} else {
+			methodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
 	case p == "/api/admin/courses":
 		if !s.requireAdmin(w, r) {
 			return

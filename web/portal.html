@@ -24,6 +24,7 @@
           <a href="#grades" data-portal-nav="grades" data-i18n="portal.grades">成绩单</a>
           <a href="#schedule" data-portal-nav="schedule" data-i18n="portal.schedule">课表</a>
           <a href="#announcements" data-portal-nav="announcements" data-i18n="portal.announcements">公告</a>
+          <a href="#mailbox" data-portal-nav="mailbox" data-i18n="portal.mailbox">校内邮箱</a>
         </nav>
         <div class="portal-header-actions">
           <button class="portal-language" type="button" data-locale-toggle>English</button>
@@ -38,6 +39,7 @@
         <a href="#grades" data-portal-nav="grades" data-i18n="portal.grades">成绩单</a>
         <a href="#schedule" data-portal-nav="schedule" data-i18n="portal.schedule">课表</a>
         <a href="#announcements" data-portal-nav="announcements" data-i18n="portal.announcements">公告</a>
+        <a href="#mailbox" data-portal-nav="mailbox" data-i18n="portal.mailbox">校内邮箱</a>
       </nav>
     </header>
 
@@ -86,6 +88,12 @@
       <section class="portal-section" id="announcements" data-portal-section="announcements" aria-labelledby="announcements-heading">
         <div class="section-heading-inline"><div><p class="portal-kicker" data-i18n="portal.campusKicker">CAMPUS LIFE</p><h2 id="announcements-heading" data-i18n="portal.announcements">公告</h2></div></div>
         <div class="announcement-list" data-announcement-list><p class="empty-state" data-i18n="common.loading">加载中…</p></div>
+      </section>
+
+      <section class="portal-section" id="mailbox" data-portal-section="mailbox" aria-labelledby="mailbox-heading">
+        <div class="section-heading-inline"><div><p class="portal-kicker" data-i18n="portal.mailboxKicker">STUDENT MAIL</p><h2 id="mailbox-heading" data-i18n="portal.mailbox">校内邮箱</h2></div><span class="section-count mailbox-unread-count" data-mailbox-unread>0</span></div>
+        <div class="mailbox-address"><span data-i18n="portal.mailboxAddress">你的学校邮箱</span><strong data-mailbox-address>—</strong><span class="mailbox-unread-label" data-mailbox-unread-label></span></div>
+        <div class="mailbox-list" data-mailbox-list><p class="empty-state" data-i18n="common.loading">加载中…</p></div>
       </section>
 
       <section class="portal-section" id="profile" data-portal-section="profile" aria-labelledby="profile-heading">

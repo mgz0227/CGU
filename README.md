@@ -20,7 +20,7 @@ go run .
 
 CGU 不包含公开的预置账号，也不会在浏览器端伪造登录。启动前必须在私有 `config.json` 或受保护的环境变量中设置唯一的引导管理员密码；密码至少 12 个字符，未配置时服务会拒绝监听端口。管理员用户名可通过 `adminUsername` 或 `CGU_ADMIN_USERNAME` 修改，默认用户名为 `admin`。
 
-招生申请会写入 `cgu_admissions`（或内存存储），管理员可在后台查看并更新处理状态。学生门户使用 `studentEmailDomain` / `CGU_STUDENT_EMAIL_DOMAIN` 为已有学号的学生展示机构邮箱地址（默认 `@cgu.edu.kg`）；这只生成地址标识，不代表 SMTP 邮箱服务已经开通。
+招生申请会写入 `cgu_admissions`（或内存存储），管理员可在后台查看并更新处理状态。学生门户使用 `studentEmailDomain` / `CGU_STUDENT_EMAIL_DOMAIN` 为已有学号的学生生成机构邮箱地址（默认 `@cgu.edu.kg`），并提供不依赖外部 SMTP 的校内收件箱；管理员可发送教务邮件，学生可查看未读邮件并标记已读。该模块是 CGU 内部信箱，不宣称已经接入外部互联网邮件投递。
 
 示例配置（请复制为未纳入版本控制的 `config.json`，再填入自己的随机密码）：
 
@@ -68,21 +68,22 @@ go run .
 
 - `/`：CGU 招生首页，支持中文/英文切换和申请意向表单
 - `/login`：Cookie 会话登录（旧 `/login.html` 地址仍兼容）
-- `/portal`：课程搜索、选课/退选、成绩、课表、公告和个人资料（旧 `/portal.html` 地址仍兼容）
-- `/admin`：课程、公告、教务统计，以及全站内容管理（旧 `/admin.html` 地址仍兼容）
-- `/admin`：课程、学生目录、成绩、课表、公告、招生和全站内容编辑
+- `/portal`：课程搜索、选课/退选、成绩、课表、公告、校内邮箱和个人资料（旧 `/portal.html` 地址仍兼容）
+- `/admin`：课程、学生目录、成绩、课表、公告、招生、校内邮箱和全站内容编辑（旧 `/admin.html` 地址仍兼容）
 - `/api/auth/*`：登录、退出和当前用户
 - `/api/courses`、`/api/enrollments`、`/api/grades`、`/api/schedule`、`/api/announcements`：教务数据
 - `/api/admin/*`：管理员统计与 CRUD 接口；`/api/admin/admissions` 查看招生申请并更新处理状态
 - `/api/admin/students`：管理员学生目录（GET 列表、POST 创建、PATCH/PUT 更新）；响应只返回脱敏资料和配置域名生成的学生邮箱，不返回密码或密码哈希
 - `/api/admin/grades`、`/api/admin/schedule`：管理员维护成绩与课表（GET/POST/PATCH/PUT/DELETE），支持 `student_id`/`user_id` 筛选并校验学生、课程引用
+- `/api/mailbox`：学生读取自己的校内收件箱并返回生成的学校邮箱地址；`PATCH /api/mailbox/{id}` 仅允许该收件人更新已读状态
+- `/api/admin/mailbox`：管理员查看发送记录并向指定学生发送校内邮件；接口要求管理员会话和 CSRF 同源请求头
 - `/api/admissions`：公开招生申请意向提交（服务端校验、持久化和按客户端限流）
 - `/api/site-content`：公开读取当前语言内容覆盖
 - `/api/admin/site-content`：管理员编辑全站双语文案、日期、数字、图片地址和链接
 
 管理员后台的“网站内容”目录会汇总首页、登录页、学生门户和管理页的所有 `data-i18n` 字段，并包含首页图片和外链资源。修改后刷新前台即可生效；启用 MySQL 后内容覆盖会持久化到 `cgu_site_content`。图片资源出于 CSP 安全限制使用本站或 `images.unsplash.com` 地址，链接支持 HTTPS、邮件地址和站内锚点。
 
-未配置 MySQL 时课程、公告、招生申请、学生目录和教务修改保存在进程内存中，服务重启后会重新加载初始内容；启用 MySQL 后首次启动会创建 `cgu_*` 表（包括 `cgu_admissions`）并写入缺失的课程、公告和内容目录。招生申请只在管理员接口返回，支持 `pending`、`reviewing`、`contacted`、`accepted`、`rejected` 和 `withdrawn` 状态；公开提交按客户端限流。学生账号由管理员创建，服务端只保存密码哈希；学生可读取自己的成绩和课表，管理员接口要求会话、管理员角色、同源请求头和 CSRF 防护。正式部署应使用 MySQL、HTTPS、反向代理和密钥管理。
+未配置 MySQL 时课程、公告、招生申请、学生目录、校内邮件和教务修改保存在进程内存中，服务重启后会重新加载初始内容；启用 MySQL 后首次启动会创建 `cgu_*` 表（包括 `cgu_admissions` 和 `cgu_mailbox_messages`）并写入缺失的课程、公告和内容目录。招生申请只在管理员接口返回，支持 `pending`、`reviewing`、`contacted`、`accepted`、`rejected` 和 `withdrawn` 状态；公开提交按客户端限流。学生账号由管理员创建，服务端只保存密码哈希；学生可读取自己的成绩、课表和自己的校内邮件，管理员接口要求会话、管理员角色、同源请求头和 CSRF 防护。正式部署应使用 MySQL、HTTPS、反向代理和密钥管理。
 
 构建检查：
 

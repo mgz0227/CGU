@@ -102,6 +102,18 @@ CREATE TABLE IF NOT EXISTS cgu_admissions (
   INDEX idx_admission_status (status_name),
   INDEX idx_admission_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS cgu_mailbox_messages (
+  id VARCHAR(64) PRIMARY KEY,
+  recipient_id VARCHAR(64) NOT NULL,
+  sender_id VARCHAR(64) NOT NULL,
+  sender_name VARCHAR(128) NOT NULL,
+  subject_text VARCHAR(200) NOT NULL,
+  body_text TEXT NOT NULL,
+  created_at VARCHAR(64) NOT NULL,
+  read_at VARCHAR(64) NULL,
+  INDEX idx_mailbox_recipient (recipient_id, created_at),
+  INDEX idx_mailbox_unread (recipient_id, read_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS cgu_site_content (
   content_key VARCHAR(160) PRIMARY KEY,
   zh_text TEXT NOT NULL,
@@ -266,6 +278,10 @@ func (s *Store) loadDatabaseLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	mailbox, err := loadMailbox(ctx, s.db)
+	if err != nil {
+		return err
+	}
 	siteContent, err := loadSiteContent(ctx, s.db)
 	if err != nil {
 		return err
@@ -280,7 +296,7 @@ func (s *Store) loadDatabaseLocked(ctx context.Context) error {
 		copy := item
 		s.siteContent[item.Key] = &copy
 	}
-	s.enrollments, s.grades, s.schedule, s.announcements, s.admissions = enrollments, grades, schedule, announcements, admissions
+	s.enrollments, s.grades, s.schedule, s.announcements, s.admissions, s.mailbox = enrollments, grades, schedule, announcements, admissions, mailbox
 	return nil
 }
 
@@ -399,6 +415,27 @@ func loadAdmissions(ctx context.Context, db *sql.DB) ([]*AdmissionApplication, e
 		item := &AdmissionApplication{}
 		if err := rows.Scan(&item.ID, &item.Name, &item.Email, &item.School, &item.Status, &item.Notes, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func loadMailbox(ctx context.Context, db *sql.DB) ([]*MailboxMessage, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, recipient_id, sender_id, sender_name, subject_text, body_text, created_at, read_at FROM cgu_mailbox_messages ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]*MailboxMessage, 0)
+	for rows.Next() {
+		item := &MailboxMessage{}
+		var readAt sql.NullString
+		if err := rows.Scan(&item.ID, &item.RecipientID, &item.SenderID, &item.SenderName, &item.Subject, &item.Body, &item.CreatedAt, &readAt); err != nil {
+			return nil, err
+		}
+		if readAt.Valid {
+			item.ReadAt = readAt.String
 		}
 		result = append(result, item)
 	}
@@ -527,6 +564,33 @@ func (s *Store) persistAdmissionLocked(item *AdmissionApplication) error {
 	defer cancel()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_admissions (id, name_text, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name_text=VALUES(name_text), email=VALUES(email), school_text=VALUES(school_text), status_name=VALUES(status_name), notes_text=VALUES(notes_text), updated_at=VALUES(updated_at)`, item.ID, item.Name, item.Email, item.School, item.Status, item.Notes, item.CreatedAt, item.UpdatedAt)
 	return err
+}
+
+func (s *Store) persistMailboxLocked(item *MailboxMessage) error {
+	if s.db == nil || item == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_mailbox_messages (id, recipient_id, sender_id, sender_name, subject_text, body_text, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE recipient_id=VALUES(recipient_id), sender_id=VALUES(sender_id), sender_name=VALUES(sender_name), subject_text=VALUES(subject_text), body_text=VALUES(body_text), created_at=VALUES(created_at), read_at=VALUES(read_at)`, item.ID, item.RecipientID, item.SenderID, item.SenderName, item.Subject, item.Body, item.CreatedAt, nullableString(item.ReadAt))
+	return err
+}
+
+func (s *Store) persistMailboxReadLocked(item *MailboxMessage) error {
+	if s.db == nil || item == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `UPDATE cgu_mailbox_messages SET read_at = ? WHERE id = ?`, nullableString(item.ReadAt), item.ID)
+	return err
+}
+
+func nullableString(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 
 func (s *Store) persistSiteContentLocked(item *SiteContent) error {
