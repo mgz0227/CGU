@@ -19,6 +19,8 @@
   "staticDir": "web",
   "cookieSecure": false,
   "publicOrigin": "",
+  "trustedProxies": [],
+  "studentEmailDomain": "cgu.edu.kg",
   "adminUsername": "admin",
   "adminPassword": ""
 }

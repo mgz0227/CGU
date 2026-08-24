@@ -5,9 +5,11 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -80,7 +82,10 @@ func TestAcademicHTTPFlow(t *testing.T) {
 
 	login = postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": testAdminUsername, "password": testAdminPassword})
 	if login.StatusCode != http.StatusOK {
-		t.Fatalf("administrator login status = %d", login.StatusCode)
+		t.Fatalf("administrator login status = %d, cookies=%v", login.StatusCode, login.Cookies())
+	}
+	if len(login.Cookies()) == 0 {
+		t.Fatalf("administrator login did not set a session cookie")
 	}
 	login.Body.Close()
 
@@ -214,6 +219,189 @@ func TestAcademicHTTPFlow(t *testing.T) {
 		t.Fatalf("course delete status = %d", response.StatusCode)
 	}
 	response.Body.Close()
+}
+
+func TestAdmissionsApplicationFlow(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	server := httptest.NewServer(NewServer(store, "web"))
+	defer server.Close()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar}
+
+	created := postJSON(t, client, server.URL+"/api/admissions", map[string]string{
+		"name": "璃月旅行者", "email": "traveler@example.com", "school": "契约与商业文明", "status": "accepted", "notes": "伪造的内部备注",
+	})
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("admission create status = %d", created.StatusCode)
+	}
+	var createdPayload struct {
+		Application AdmissionApplication `json:"application"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createdPayload); err != nil {
+		t.Fatal(err)
+	}
+	created.Body.Close()
+	if createdPayload.Application.ID == "" || createdPayload.Application.Status != "pending" || createdPayload.Application.Notes != "" {
+		t.Fatalf("unexpected created application: %#v", createdPayload.Application)
+	}
+	if len(store.admissions) != 1 {
+		t.Fatalf("in-memory admission count = %d, want 1", len(store.admissions))
+	}
+	privateList, err := client.Get(server.URL + "/api/admin/admissions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if privateList.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous admin admission list status = %d", privateList.StatusCode)
+	}
+	privateList.Body.Close()
+
+	invalid := postJSON(t, client, server.URL+"/api/admissions", map[string]string{
+		"name": "Invalid", "email": "not-an-email", "school": "School",
+	})
+	if invalid.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid admission status = %d", invalid.StatusCode)
+	}
+	invalid.Body.Close()
+
+	login := postJSON(t, client, server.URL+"/api/auth/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	})
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("administrator login status = %d", login.StatusCode)
+	}
+	login.Body.Close()
+
+	list, err := client.Get(server.URL + "/api/admin/admissions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list.StatusCode != http.StatusOK {
+		t.Fatalf("admin admission list status = %d", list.StatusCode)
+	}
+	var listPayload struct {
+		Applications []AdmissionApplication `json:"applications"`
+	}
+	if err := json.NewDecoder(list.Body).Decode(&listPayload); err != nil {
+		t.Fatal(err)
+	}
+	list.Body.Close()
+	if len(listPayload.Applications) != 1 || listPayload.Applications[0].Email != "traveler@example.com" {
+		t.Fatalf("unexpected admin applications: %#v", listPayload.Applications)
+	}
+
+	updateBody, err := json.Marshal(map[string]string{"status": "contacted", "notes": "已发送申请指南"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateRequest, err := http.NewRequest(http.MethodPatch, server.URL+"/api/admin/admissions/"+url.PathEscape(createdPayload.Application.ID), bytes.NewReader(updateBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateRequest.Header.Set("Content-Type", "application/json")
+	updateRequest.Header.Set("X-CGU-Request", "1")
+	update, err := client.Do(updateRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if update.StatusCode != http.StatusOK {
+		t.Fatalf("admin admission update status = %d", update.StatusCode)
+	}
+	update.Body.Close()
+	if store.admissions[0].Status != "contacted" || store.admissions[0].Notes != "已发送申请指南" {
+		t.Fatalf("admission update not stored: %#v", store.admissions[0])
+	}
+
+	stats, err := client.Get(server.URL + "/api/admin/stats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statsPayload struct {
+		Stats map[string]int `json:"stats"`
+	}
+	if err := json.NewDecoder(stats.Body).Decode(&statsPayload); err != nil {
+		t.Fatal(err)
+	}
+	stats.Body.Close()
+	if statsPayload.Stats["admissions"] != 1 || statsPayload.Stats["pendingAdmissions"] != 0 {
+		t.Fatalf("unexpected admission stats: %#v", statsPayload.Stats)
+	}
+
+	// Reviewing applications remain actionable in the pending counter.
+	updateBody, err = json.Marshal(map[string]string{"status": "reviewing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateRequest, err = http.NewRequest(http.MethodPatch, server.URL+"/api/admin/admissions/"+url.PathEscape(createdPayload.Application.ID), bytes.NewReader(updateBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateRequest.Header.Set("Content-Type", "application/json")
+	updateRequest.Header.Set("X-CGU-Request", "1")
+	update, err = client.Do(updateRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if update.StatusCode != http.StatusOK {
+		t.Fatalf("reviewing admission update status = %d", update.StatusCode)
+	}
+	update.Body.Close()
+	stats, err = client.Get(server.URL + "/api/admin/stats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(stats.Body).Decode(&statsPayload); err != nil {
+		t.Fatal(err)
+	}
+	stats.Body.Close()
+	if statsPayload.Stats["pendingAdmissions"] != 1 || statsPayload.Stats["pending"] < 1 {
+		t.Fatalf("reviewing application missing from pending stats: %#v", statsPayload.Stats)
+	}
+}
+
+func TestAdmissionRateLimit(t *testing.T) {
+	server := httptest.NewServer(NewServer(NewStoreWithAdmin("admin", ""), "web"))
+	defer server.Close()
+	client := &http.Client{}
+	for attempt := 0; attempt < admissionMax; attempt++ {
+		response := postJSON(t, client, server.URL+"/api/admissions", map[string]string{
+			"name": "申请人", "email": "rate@example.com", "school": "综合学院",
+		})
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("admission attempt %d status = %d", attempt+1, response.StatusCode)
+		}
+		response.Body.Close()
+	}
+	response := postJSON(t, client, server.URL+"/api/admissions", map[string]string{
+		"name": "申请人", "email": "rate@example.com", "school": "综合学院",
+	})
+	if response.StatusCode != http.StatusTooManyRequests || response.Header.Get("Retry-After") == "" {
+		t.Fatalf("admission rate limit status = %d, retry-after = %q", response.StatusCode, response.Header.Get("Retry-After"))
+	}
+	response.Body.Close()
+}
+
+func TestAdmissionCreateRollsBackWhenDatabaseWriteFails(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	db, err := sql.Open("mysql", "cgu:cgu@tcp(127.0.0.1:1)/cgu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store.db = db
+
+	item, apiError := store.createAdmission(AdmissionApplicationInput{Name: "申请人", Email: "rollback@example.com", School: "综合学院"})
+	if item != nil || apiError == nil || apiError.Status != http.StatusServiceUnavailable {
+		t.Fatalf("create result = %#v, error = %#v", item, apiError)
+	}
+	if len(store.admissions) != 0 {
+		t.Fatalf("failed database write left %d in-memory applications", len(store.admissions))
+	}
 }
 
 func TestOriginAllowedBehindTLSProxy(t *testing.T) {
@@ -378,6 +566,14 @@ func TestStaticRoutes(t *testing.T) {
 		}
 		response.Body.Close()
 	}
+	asset, err := http.Get(server.URL + "/portal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asset.StatusCode != http.StatusOK || !strings.Contains(asset.Header.Get("Cache-Control"), "no-cache") {
+		t.Fatalf("portal asset cache policy = status %d, cache %q", asset.StatusCode, asset.Header.Get("Cache-Control"))
+	}
+	asset.Body.Close()
 	response, err := http.Get(server.URL + "/does-not-exist")
 	if err != nil {
 		t.Fatal(err)
@@ -399,6 +595,62 @@ func TestStoreContainsOnlyConfiguredBootstrapAdmin(t *testing.T) {
 	}
 	if _, ok := store.users["student"]; ok {
 		t.Fatal("legacy student account must not be seeded")
+	}
+}
+
+func TestStudentMailboxUsesConfiguredDomain(t *testing.T) {
+	store := NewStoreWithAdminAndDomain("admin", "long-test-password-2026!", "student.cgu.edu.kg")
+	student := &User{ID: "student-1", Username: "student-1", Role: "student", StudentID: "CGU-001"}
+	profile := store.publicUser(student)
+	if profile["studentEmail"] != "cgu-001@student.cgu.edu.kg" {
+		t.Fatalf("student email = %v", profile["studentEmail"])
+	}
+	if got := studentMailbox("bad id", "student.cgu.edu.kg"); got != "" {
+		t.Fatalf("invalid student id produced mailbox %q", got)
+	}
+}
+
+func TestStudentLoginIdentifiersMustRemainUnique(t *testing.T) {
+	store := NewStoreWithAdminAndDomain("admin", "long-test-password-2026!", "students.cgu.edu.kg")
+	first, apiError := store.createStudent(StudentInput{
+		Username: "student-one", Name: "Student One", Email: "contact-one@example.com",
+		StudentID: "CGU-ONE", Password: "student-one-password!",
+	})
+	if apiError != nil || first == nil {
+		t.Fatalf("first student = %#v, error = %#v", first, apiError)
+	}
+
+	second, apiError := store.createStudent(StudentInput{
+		Username: "student-two", Name: "Student Two", Email: "cgu-one@students.cgu.edu.kg",
+		StudentID: "CGU-TWO", Password: "student-two-password!",
+	})
+	if second != nil || apiError == nil || apiError.Status != http.StatusConflict {
+		t.Fatalf("conflicting student = %#v, error = %#v", second, apiError)
+	}
+}
+
+func TestTrustedProxyRateAddress(t *testing.T) {
+	server := NewServer(NewStoreWithAdmin("admin", "long-test-password-2026!"), "web")
+	if err := server.setTrustedProxies([]string{"10.0.0.0/8"}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "http://cgu.test/api/admissions", nil)
+	request.RemoteAddr = "10.20.30.40:443"
+	request.Header.Set("X-Forwarded-For", "198.51.100.22, 10.20.30.41")
+	if got := server.clientRateAddress(request); got != "198.51.100.22" {
+		t.Fatalf("trusted proxy client address = %q", got)
+	}
+
+	request.RemoteAddr = "192.0.2.10:443"
+	if got := server.clientRateAddress(request); got != "192.0.2.10" {
+		t.Fatalf("untrusted proxy client address = %q", got)
+	}
+
+	request.RemoteAddr = "10.20.30.40:443"
+	request.Header.Set("X-Forwarded-For", "not-an-address")
+	if got := server.clientRateAddress(request); got != "10.20.30.40" {
+		t.Fatalf("malformed forwarded address = %q", got)
 	}
 }
 
@@ -442,6 +694,300 @@ func TestLoopbackListenerDetection(t *testing.T) {
 			t.Fatalf("expected non-loopback address: %s", addr)
 		}
 	}
+}
+
+func TestAdminStudentAndAcademicMutations(t *testing.T) {
+	store := NewStoreWithAdminAndDomain(testAdminUsername, testAdminPassword, "students.cgu.edu.kg")
+	server := httptest.NewServer(NewServer(store, "web"))
+	defer server.Close()
+
+	adminJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminClient := &http.Client{Jar: adminJar}
+	response, err := adminClient.Get(server.URL + "/api/admin/students")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous student directory status = %d", response.StatusCode)
+	}
+	response.Body.Close()
+
+	login := postJSON(t, adminClient, server.URL+"/api/auth/login", map[string]string{"username": testAdminUsername, "password": testAdminPassword})
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("administrator login status = %d", login.StatusCode)
+	}
+	login.Body.Close()
+
+	created := postJSON(t, adminClient, server.URL+"/api/admin/students", map[string]string{
+		"username": "traveler-001", "name": "旅行者一号", "studentId": "CGU-2026-001", "college": "至冬与极地研究学院", "year": "2026", "password": "student-password-2026!",
+	})
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("student create status = %d", created.StatusCode)
+	}
+	rawCreated, err := io.ReadAll(created.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Body.Close()
+	if strings.Contains(strings.ToLower(string(rawCreated)), "passwordhash") || strings.Contains(strings.ToLower(string(rawCreated)), "password_hash") {
+		t.Fatalf("student response leaked password hash: %s", rawCreated)
+	}
+	var createdPayload struct {
+		Student AdminStudent `json:"student"`
+	}
+	if err := json.Unmarshal(rawCreated, &createdPayload); err != nil {
+		t.Fatal(err)
+	}
+	student := createdPayload.Student
+	if student.ID == "" || student.Role != "student" || student.StudentEmail != "cgu-2026-001@students.cgu.edu.kg" {
+		t.Fatalf("unexpected student projection: %#v", student)
+	}
+	if store.users[student.ID] == nil || store.users[student.ID].PasswordHash == "" {
+		t.Fatal("student password hash was not stored server-side")
+	}
+
+	list, err := adminClient.Get(server.URL + "/api/admin/students")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list.StatusCode != http.StatusOK {
+		t.Fatalf("student directory status = %d", list.StatusCode)
+	}
+	var listPayload struct {
+		Students []AdminStudent `json:"students"`
+	}
+	if err := json.NewDecoder(list.Body).Decode(&listPayload); err != nil {
+		t.Fatal(err)
+	}
+	list.Body.Close()
+	if len(listPayload.Students) != 1 || listPayload.Students[0].ID != student.ID {
+		t.Fatalf("unexpected student directory: %#v", listPayload.Students)
+	}
+
+	updated := doJSON(t, adminClient, http.MethodPatch, server.URL+"/api/admin/students/"+url.PathEscape(student.ID), map[string]string{"name": "旅行者一号·更新", "password": "updated-student-password-2026!"})
+	if updated.StatusCode != http.StatusOK {
+		t.Fatalf("student update status = %d", updated.StatusCode)
+	}
+	updatedRaw, err := io.ReadAll(updated.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Body.Close()
+	if strings.Contains(strings.ToLower(string(updatedRaw)), "passwordhash") || strings.Contains(strings.ToLower(string(updatedRaw)), "password_hash") {
+		t.Fatalf("student update leaked password hash: %s", updatedRaw)
+	}
+	if updatedUser := store.users[student.ID]; updatedUser == nil || !verifyPassword("updated-student-password-2026!", updatedUser.PasswordHash) {
+		t.Fatal("student password was not rotated")
+	}
+	generatedEmailUpdate := doJSON(t, adminClient, http.MethodPatch, server.URL+"/api/admin/students/"+url.PathEscape(student.ID), map[string]string{"studentId": "CGU-2026-002"})
+	if generatedEmailUpdate.StatusCode != http.StatusOK {
+		t.Fatalf("student id update status = %d", generatedEmailUpdate.StatusCode)
+	}
+	var generatedEmailPayload struct {
+		Student AdminStudent `json:"student"`
+	}
+	if err := json.NewDecoder(generatedEmailUpdate.Body).Decode(&generatedEmailPayload); err != nil {
+		t.Fatal(err)
+	}
+	generatedEmailUpdate.Body.Close()
+	if generatedEmailPayload.Student.StudentEmail != "cgu-2026-002@students.cgu.edu.kg" {
+		t.Fatalf("generated student email did not follow student id: %#v", generatedEmailPayload.Student)
+	}
+	student = generatedEmailPayload.Student
+
+	studentJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	studentClient := &http.Client{Jar: studentJar}
+	studentLogin := postJSON(t, studentClient, server.URL+"/api/auth/login", map[string]string{"username": "traveler-001", "password": "updated-student-password-2026!"})
+	if studentLogin.StatusCode != http.StatusOK {
+		t.Fatalf("student login status = %d", studentLogin.StatusCode)
+	}
+	studentLogin.Body.Close()
+	studentDirectory, err := studentClient.Get(server.URL + "/api/admin/students")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if studentDirectory.StatusCode != http.StatusForbidden {
+		t.Fatalf("student admin directory status = %d", studentDirectory.StatusCode)
+	}
+	studentDirectory.Body.Close()
+
+	course := store.courses[0]
+	grade := postJSON(t, adminClient, server.URL+"/api/admin/grades", map[string]any{
+		"studentId": student.ID, "courseId": course.ID, "score": 95, "point": 4, "status": "published",
+	})
+	if grade.StatusCode != http.StatusCreated {
+		t.Fatalf("grade create status = %d", grade.StatusCode)
+	}
+	var gradePayload struct {
+		Grade Grade `json:"grade"`
+	}
+	if err := json.NewDecoder(grade.Body).Decode(&gradePayload); err != nil {
+		t.Fatal(err)
+	}
+	grade.Body.Close()
+	if gradePayload.Grade.ID == "" || gradePayload.Grade.StudentID != student.ID || gradePayload.Grade.CourseCode != course.Code {
+		t.Fatalf("unexpected grade: %#v", gradePayload.Grade)
+	}
+	gradeUpdate := doJSON(t, adminClient, http.MethodPatch, server.URL+"/api/admin/grades/"+url.PathEscape(gradePayload.Grade.ID), map[string]any{"score": 98})
+	if gradeUpdate.StatusCode != http.StatusOK {
+		t.Fatalf("grade update status = %d", gradeUpdate.StatusCode)
+	}
+	gradeUpdate.Body.Close()
+
+	schedule := postJSON(t, adminClient, server.URL+"/api/admin/schedule", map[string]any{
+		"studentId": student.StudentID, "courseId": course.ID, "day": 2, "start": "09:00", "end": "10:30", "location": "至冬研究楼 101",
+	})
+	if schedule.StatusCode != http.StatusCreated {
+		t.Fatalf("schedule create status = %d", schedule.StatusCode)
+	}
+	var schedulePayload struct {
+		Schedule ScheduleEntry `json:"schedule"`
+	}
+	if err := json.NewDecoder(schedule.Body).Decode(&schedulePayload); err != nil {
+		t.Fatal(err)
+	}
+	schedule.Body.Close()
+	if schedulePayload.Schedule.ID == "" || schedulePayload.Schedule.StudentID != student.ID || schedulePayload.Schedule.Day != 2 {
+		t.Fatalf("unexpected schedule: %#v", schedulePayload.Schedule)
+	}
+
+	studentGrades, err := studentClient.Get(server.URL + "/api/grades")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if studentGrades.StatusCode != http.StatusOK {
+		t.Fatalf("student grades status = %d", studentGrades.StatusCode)
+	}
+	var studentGradePayload struct {
+		Grades []Grade `json:"grades"`
+	}
+	if err := json.NewDecoder(studentGrades.Body).Decode(&studentGradePayload); err != nil {
+		t.Fatal(err)
+	}
+	studentGrades.Body.Close()
+	if len(studentGradePayload.Grades) != 1 || studentGradePayload.Grades[0].StudentID != student.ID {
+		t.Fatalf("student grade visibility = %#v", studentGradePayload.Grades)
+	}
+	studentSchedule, err := studentClient.Get(server.URL + "/api/schedule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if studentSchedule.StatusCode != http.StatusOK {
+		t.Fatalf("student schedule status = %d", studentSchedule.StatusCode)
+	}
+	var studentSchedulePayload struct {
+		Schedule []ScheduleEntry `json:"schedule"`
+	}
+	if err := json.NewDecoder(studentSchedule.Body).Decode(&studentSchedulePayload); err != nil {
+		t.Fatal(err)
+	}
+	studentSchedule.Body.Close()
+	if len(studentSchedulePayload.Schedule) != 1 || studentSchedulePayload.Schedule[0].StudentID != student.ID {
+		t.Fatalf("student schedule visibility = %#v", studentSchedulePayload.Schedule)
+	}
+
+	removeSchedule := doJSON(t, adminClient, http.MethodDelete, server.URL+"/api/admin/schedule/"+url.PathEscape(schedulePayload.Schedule.ID), nil)
+	if removeSchedule.StatusCode != http.StatusOK {
+		t.Fatalf("schedule delete status = %d", removeSchedule.StatusCode)
+	}
+	removeSchedule.Body.Close()
+	removeGrade := doJSON(t, adminClient, http.MethodDelete, server.URL+"/api/admin/grades/"+url.PathEscape(gradePayload.Grade.ID), nil)
+	if removeGrade.StatusCode != http.StatusOK {
+		t.Fatalf("grade delete status = %d", removeGrade.StatusCode)
+	}
+	removeGrade.Body.Close()
+}
+
+func TestAdminAcademicMutationRequiresCSRFHeader(t *testing.T) {
+	server := httptest.NewServer(NewServer(NewStoreWithAdmin(testAdminUsername, testAdminPassword), "web"))
+	defer server.Close()
+	client := &http.Client{}
+	login := postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": testAdminUsername, "password": testAdminPassword})
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("administrator login status = %d", login.StatusCode)
+	}
+	login.Body.Close()
+	body, err := json.Marshal(map[string]any{"studentId": "missing", "courseId": "missing", "score": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/admin/grades", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing CSRF header status = %d", response.StatusCode)
+	}
+	response.Body.Close()
+}
+
+func TestAcademicMutationRollbackWhenDatabaseWriteFails(t *testing.T) {
+	closedDB, err := sql.Open("mysql", "cgu:cgu@tcp(127.0.0.1:1)/cgu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closedDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	studentStore := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	studentStore.db = closedDB
+	_, studentErr := studentStore.createStudent(StudentInput{Username: "rollback-student", Name: "回滚学生", StudentID: "CGU-ROLLBACK", Password: "rollback-password-2026!"})
+	if studentErr == nil || studentErr.Status != http.StatusServiceUnavailable || len(studentStore.users) != 1 {
+		t.Fatalf("student rollback result = %#v, users = %d", studentErr, len(studentStore.users))
+	}
+
+	gradeStore := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	gradeStore.db = closedDB
+	gradeStore.users["student-roll"] = &User{ID: "student-roll", Username: "student-roll", Name: "回滚学生", Role: "student", StudentID: "CGU-ROLLBACK"}
+	_, gradeErr := gradeStore.createGrade(GradeInput{StudentID: "student-roll", CourseID: gradeStore.courses[0].ID, Score: 90, Point: 3})
+	if gradeErr == nil || gradeErr.Status != http.StatusServiceUnavailable || len(gradeStore.grades) != 0 {
+		t.Fatalf("grade rollback result = %#v, grades = %d", gradeErr, len(gradeStore.grades))
+	}
+
+	scheduleStore := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	scheduleStore.db = closedDB
+	scheduleStore.users["student-roll"] = &User{ID: "student-roll", Username: "student-roll", Name: "回滚学生", Role: "student", StudentID: "CGU-ROLLBACK"}
+	_, scheduleErr := scheduleStore.createSchedule(ScheduleInput{StudentID: "student-roll", CourseID: scheduleStore.courses[0].ID, Day: intPtr(1), Start: "09:00", End: "10:00"})
+	if scheduleErr == nil || scheduleErr.Status != http.StatusServiceUnavailable || len(scheduleStore.schedule) != 0 {
+		t.Fatalf("schedule rollback result = %#v, schedule = %d", scheduleErr, len(scheduleStore.schedule))
+	}
+}
+
+func intPtr(value int) *int { return &value }
+
+func doJSON(t *testing.T, client *http.Client, method, endpoint string, value any) *http.Response {
+	t.Helper()
+	var body io.Reader
+	if value != nil {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequest(method, endpoint, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CGU-Request", "1")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
 }
 
 func postJSON(t *testing.T, client *http.Client, endpoint string, value any) *http.Response {

@@ -50,6 +50,9 @@ func TestLoadConfigPrecedenceAndExplicitDatabaseDisable(t *testing.T) {
 	if cfg.AdminUsername != "registrar" || cfg.AdminPassword != "configured-from-json" {
 		t.Fatalf("administrator config was not loaded: username=%q password-set=%t", cfg.AdminUsername, cfg.AdminPassword != "")
 	}
+	if cfg.StudentEmailDomain != "cgu.edu.kg" {
+		t.Fatalf("default student email domain = %q", cfg.StudentEmailDomain)
+	}
 	if cfg.PublicOrigin != "https://cgu.edu.kg/" {
 		t.Fatalf("public origin was not loaded: %q", cfg.PublicOrigin)
 	}

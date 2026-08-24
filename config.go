@@ -12,13 +12,15 @@ import (
 // AppConfig is intentionally small and serializable so the same deployment
 // can be configured by config.json, .env, or process environment variables.
 type AppConfig struct {
-	Server        ServerConfig   `json:"server"`
-	Database      DatabaseConfig `json:"database"`
-	StaticDir     string         `json:"staticDir"`
-	CookieSecure  bool           `json:"cookieSecure"`
-	PublicOrigin  string         `json:"publicOrigin"`
-	AdminUsername string         `json:"adminUsername"`
-	AdminPassword string         `json:"adminPassword"`
+	Server             ServerConfig   `json:"server"`
+	Database           DatabaseConfig `json:"database"`
+	StaticDir          string         `json:"staticDir"`
+	CookieSecure       bool           `json:"cookieSecure"`
+	PublicOrigin       string         `json:"publicOrigin"`
+	TrustedProxies     []string       `json:"trustedProxies"`
+	StudentEmailDomain string         `json:"studentEmailDomain"`
+	AdminUsername      string         `json:"adminUsername"`
+	AdminPassword      string         `json:"adminPassword"`
 }
 
 type ServerConfig struct {
@@ -42,10 +44,11 @@ type DatabaseConfig struct {
 
 func defaultConfig() AppConfig {
 	return AppConfig{
-		Server:        ServerConfig{Address: "127.0.0.1:8000", Host: "127.0.0.1", Port: 8000},
-		Database:      DatabaseConfig{Driver: "mysql", Host: "127.0.0.1", Port: 3306, Name: "cgu", MaxOpenConns: 10, MaxIdleConns: 5},
-		StaticDir:     "web",
-		AdminUsername: "admin",
+		Server:             ServerConfig{Address: "127.0.0.1:8000", Host: "127.0.0.1", Port: 8000},
+		Database:           DatabaseConfig{Driver: "mysql", Host: "127.0.0.1", Port: 3306, Name: "cgu", MaxOpenConns: 10, MaxIdleConns: 5},
+		StaticDir:          "web",
+		AdminUsername:      "admin",
+		StudentEmailDomain: "cgu.edu.kg",
 	}
 }
 
@@ -78,6 +81,11 @@ func LoadConfig() AppConfig {
 	cfg.StaticDir = envString(fileEnv, "CGU_STATIC_DIR", cfg.StaticDir)
 	cfg.CookieSecure = envBool(fileEnv, "CGU_COOKIE_SECURE", cfg.CookieSecure)
 	cfg.PublicOrigin = envString(fileEnv, "CGU_PUBLIC_ORIGIN", cfg.PublicOrigin)
+	cfg.TrustedProxies = envList(fileEnv, "CGU_TRUSTED_PROXIES", cfg.TrustedProxies)
+	cfg.StudentEmailDomain = envString(fileEnv, "CGU_STUDENT_EMAIL_DOMAIN", cfg.StudentEmailDomain)
+	if strings.TrimSpace(cfg.StudentEmailDomain) == "" {
+		cfg.StudentEmailDomain = "cgu.edu.kg"
+	}
 	cfg.AdminUsername = envString(fileEnv, "CGU_ADMIN_USERNAME", cfg.AdminUsername)
 	cfg.AdminPassword = envString(fileEnv, "CGU_ADMIN_PASSWORD", cfg.AdminPassword)
 	if strings.TrimSpace(cfg.AdminUsername) == "" {
@@ -225,6 +233,20 @@ func envBool(fileEnv map[string]string, name string, fallback bool) bool {
 		return fallback
 	}
 	return parsed
+}
+
+func envList(fileEnv map[string]string, name string, fallback []string) []string {
+	value := firstEnvWithFile(fileEnv, name)
+	if value == "" {
+		return fallback
+	}
+	result := make([]string, 0)
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func parseDotEnv(content string) map[string]string {

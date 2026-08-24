@@ -147,7 +147,8 @@
       'home.schoolUndecided': '还在探索中',
       'home.submitApplication': '发送申请意向',
       'home.formNote': '提交即表示你同意 CGU 使用这些信息联系你。',
-      'home.applicationReceived': '申请意向已收到，招生老师会尽快与你联系。'
+      'home.applicationReceived': '申请意向已收到，招生老师会尽快与你联系。',
+      'home.applicationError': '申请提交失败，请稍后重试。'
     },
     en: {
       'home.metaTitle': 'CGU | China Genshin University',
@@ -296,7 +297,8 @@
       'home.schoolUndecided': 'Still exploring',
       'home.submitApplication': 'Send application interest',
       'home.formNote': 'By submitting, you agree that CGU may use this information to contact you.',
-      'home.applicationReceived': 'Application interest received. Admissions will be in touch soon.'
+    'home.applicationReceived': 'Application interest received. Admissions will be in touch soon.',
+    'home.applicationError': 'The application could not be submitted. Try again later.'
     }
   };
 
@@ -396,16 +398,34 @@
     if (event.target === dialog) closeDialog();
   });
 
-  document.querySelector('.apply-form')?.addEventListener('submit', (event) => {
+  document.querySelector('.apply-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     if (!form.checkValidity()) {
       form.reportValidity();
       return;
     }
-    closeDialog();
-    form.reset();
-    showToast(translate('home.applicationReceived'));
+    const submit = form.querySelector('button[type="submit"]');
+    if (submit) submit.disabled = true;
+    try {
+      const values = Object.fromEntries(new FormData(form).entries());
+      const response = await fetch('/api/admissions', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-CGU-Request': '1' },
+        body: JSON.stringify({ name: String(values.name || '').trim(), email: String(values.email || '').trim(), school: String(values.school || '').trim() })
+      });
+      let payload = null;
+      try { payload = await response.json(); } catch { /* the status still determines the result */ }
+      if (!response.ok || payload?.ok === false) throw new Error(payload?.error?.message || payload?.message || translate('home.applicationError'));
+      closeDialog();
+      form.reset();
+      showToast(translate('home.applicationReceived'));
+    } catch (error) {
+      showToast(error?.message || translate('home.applicationError'));
+    } finally {
+      if (submit) submit.disabled = false;
+    }
   });
 
   document.querySelectorAll('.program-detail').forEach((button) => {

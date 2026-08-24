@@ -14,10 +14,13 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/mail"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -34,15 +37,18 @@ import (
 )
 
 const (
-	sessionCookie = "cgu_session"
-	sessionTTL    = 8 * time.Hour
-	bodyLimit     = 1 << 20
-	loginWindow   = 5 * time.Minute
-	loginBlock    = 15 * time.Minute
-	loginMaxFails = 8
-	loginMaxKeys  = 10_000
-	maxSessions   = 50_000
-	dummyBcrypt   = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+	sessionCookie    = "cgu_session"
+	sessionTTL       = 8 * time.Hour
+	bodyLimit        = 1 << 20
+	loginWindow      = 5 * time.Minute
+	loginBlock       = 15 * time.Minute
+	loginMaxFails    = 8
+	loginMaxKeys     = 10_000
+	admissionWindow  = time.Hour
+	admissionMax     = 20
+	admissionMaxKeys = 10_000
+	maxSessions      = 50_000
+	dummyBcrypt      = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 )
 
 type User struct {
@@ -55,6 +61,20 @@ type User struct {
 	StudentID    string `json:"studentId,omitempty"`
 	College      string `json:"college,omitempty"`
 	Year         string `json:"year,omitempty"`
+}
+
+// AdminStudent is the administrator-facing student directory projection. It
+// intentionally has no password or password-hash field.
+type AdminStudent struct {
+	ID           string `json:"id"`
+	Username     string `json:"username"`
+	Name         string `json:"name"`
+	Email        string `json:"email"`
+	StudentEmail string `json:"studentEmail"`
+	StudentID    string `json:"studentId"`
+	College      string `json:"college"`
+	Year         string `json:"year"`
+	Role         string `json:"role"`
 }
 
 type Course struct {
@@ -109,6 +129,44 @@ type ScheduleEntry struct {
 	Teacher      string `json:"teacher"`
 }
 
+type StudentInput struct {
+	Username  string `json:"username"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	StudentID string `json:"studentId"`
+	College   string `json:"college"`
+	Year      string `json:"year"`
+	Password  string `json:"password"`
+}
+
+type GradeInput struct {
+	ID           string `json:"id"`
+	StudentID    string `json:"studentId"`
+	CourseID     string `json:"courseId"`
+	CourseCode   string `json:"courseCode"`
+	CourseNameZh string `json:"courseNameZh"`
+	CourseNameEn string `json:"courseNameEn"`
+	Score        any    `json:"score"`
+	Point        any    `json:"point"`
+	Term         string `json:"term"`
+	Status       string `json:"status"`
+	Credits      *int   `json:"credits"`
+}
+
+type ScheduleInput struct {
+	ID           string `json:"id"`
+	StudentID    string `json:"studentId"`
+	CourseID     string `json:"courseId"`
+	CourseCode   string `json:"courseCode"`
+	CourseNameZh string `json:"courseNameZh"`
+	CourseNameEn string `json:"courseNameEn"`
+	Day          *int   `json:"day"`
+	Start        string `json:"start"`
+	End          string `json:"end"`
+	Location     string `json:"location"`
+	Teacher      string `json:"teacher"`
+}
+
 type Announcement struct {
 	ID          string `json:"id"`
 	TitleZh     string `json:"titleZh"`
@@ -136,6 +194,29 @@ type SiteContentInput struct {
 	Key string `json:"key"`
 	Zh  string `json:"zh"`
 	En  string `json:"en"`
+}
+
+// AdmissionApplication is a public admissions lead that can be reviewed by
+// administrators. Email and other contact details are only returned from the
+// administrator endpoint; the public API returns the created record once so
+// the client can display a confirmation identifier.
+type AdmissionApplication struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	School    string `json:"school"`
+	Status    string `json:"status"`
+	Notes     string `json:"notes,omitempty"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+}
+
+type AdmissionApplicationInput struct {
+	Name   string `json:"name"`
+	Email  string `json:"email"`
+	School string `json:"school"`
+	Status string `json:"status"`
+	Notes  string `json:"notes"`
 }
 
 // Input structs accept the bilingual field names emitted by portal.js and a
@@ -201,31 +282,37 @@ type session struct {
 }
 
 type Store struct {
-	mu            sync.RWMutex
-	db            *sql.DB
-	users         map[string]*User
-	courses       []*Course
-	enrollments   []*Enrollment
-	grades        []*Grade
-	schedule      []*ScheduleEntry
-	announcements []*Announcement
-	siteContent   map[string]*SiteContent
+	mu                 sync.RWMutex
+	db                 *sql.DB
+	studentEmailDomain string
+	users              map[string]*User
+	courses            []*Course
+	enrollments        []*Enrollment
+	grades             []*Grade
+	schedule           []*ScheduleEntry
+	announcements      []*Announcement
+	admissions         []*AdmissionApplication
+	siteContent        map[string]*SiteContent
 }
 
 func NewStore() *Store {
 	cfg := LoadConfig()
-	return NewStoreWithAdmin(cfg.AdminUsername, cfg.AdminPassword)
+	return NewStoreWithAdminAndDomain(cfg.AdminUsername, cfg.AdminPassword, cfg.StudentEmailDomain)
 }
 
 // NewStoreWithAdmin creates the in-memory store and, when a password is
 // supplied, exactly one bootstrap administrator. An empty password is useful
 // for public-route tests but is rejected by main before serving requests.
 func NewStoreWithAdmin(username, password string) *Store {
+	return NewStoreWithAdminAndDomain(username, password, "cgu.edu.kg")
+}
+
+func NewStoreWithAdminAndDomain(username, password, emailDomain string) *Store {
 	username = strings.TrimSpace(username)
 	if username == "" {
 		username = "admin"
 	}
-	s := &Store{users: make(map[string]*User), siteContent: defaultSiteContent()}
+	s := &Store{studentEmailDomain: normalizeStudentEmailDomain(emailDomain), users: make(map[string]*User), siteContent: defaultSiteContent()}
 	if strings.TrimSpace(password) != "" {
 		s.users["admin"] = &User{
 			ID: "admin", Username: username, Name: "教务处", Email: "admin@cgu.local", Role: "admin",
@@ -241,7 +328,8 @@ func (s *Store) authenticate(identifier, password string) *User {
 	defer s.mu.Unlock()
 	found := false
 	for _, user := range s.users {
-		if strings.EqualFold(user.Username, identifier) || strings.EqualFold(user.Email, identifier) {
+		studentEmail := user.Role == "student" && strings.EqualFold(studentMailbox(user.StudentID, s.studentEmailDomain), identifier)
+		if strings.EqualFold(user.Username, identifier) || strings.EqualFold(user.Email, identifier) || studentEmail {
 			found = true
 			if !verifyPassword(password, user.PasswordHash) {
 				return nil
@@ -282,11 +370,273 @@ func (s *Store) publicUser(user *User) map[string]any {
 		}
 	}
 	s.mu.RUnlock()
+	studentEmail := ""
+	if user.Role == "student" {
+		studentEmail = studentMailbox(user.StudentID, s.studentEmailDomain)
+	}
 	return map[string]any{
 		"id": user.ID, "username": user.Username, "role": user.Role, "name": user.Name,
-		"email": user.Email, "studentId": user.StudentID, "college": user.College, "year": user.Year,
+		"email": user.Email, "studentEmail": studentEmail, "studentId": user.StudentID, "college": user.College, "year": user.Year,
 		"stats": map[string]any{"students": students},
 	}
+}
+
+func (s *Store) adminStudentView(user *User) AdminStudent {
+	if user == nil {
+		return AdminStudent{}
+	}
+	return AdminStudent{
+		ID: user.ID, Username: user.Username, Name: user.Name, Email: user.Email,
+		StudentEmail: studentMailbox(user.StudentID, s.studentEmailDomain), StudentID: user.StudentID,
+		College: user.College, Year: user.Year, Role: user.Role,
+	}
+}
+
+func (s *Store) studentsForAdmin() []AdminStudent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]AdminStudent, 0)
+	for _, user := range s.users {
+		if user == nil || user.Role != "student" {
+			continue
+		}
+		result = append(result, s.adminStudentView(user))
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return strings.ToLower(result[i].StudentID) < strings.ToLower(result[j].StudentID)
+	})
+	return result
+}
+
+func (s *Store) resolveStudentLocked(value string) *User {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	for _, user := range s.users {
+		if user == nil || user.Role != "student" {
+			continue
+		}
+		if strings.EqualFold(user.ID, value) || strings.EqualFold(user.StudentID, value) || strings.EqualFold(user.Username, value) {
+			return user
+		}
+	}
+	return nil
+}
+
+func (s *Store) studentRecordID(value string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if student := s.resolveStudentLocked(value); student != nil {
+		return student.ID
+	}
+	return ""
+}
+
+func validAcademicIdentifier(value string, max int) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len([]rune(value)) > max {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validateContactEmail(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 254 || strings.ContainsAny(value, "\r\n") {
+		return false
+	}
+	parsed, err := mail.ParseAddress(value)
+	return err == nil && parsed.Address == value && strings.Contains(value, "@")
+}
+
+func validateStudentPassword(value string) bool {
+	return len([]byte(value)) >= 12 && len([]byte(value)) <= 256 && !strings.ContainsAny(value, "\r\n")
+}
+
+func (s *Store) studentLoginIdentifiers(username, email, studentID string) []string {
+	values := []string{strings.TrimSpace(username), strings.TrimSpace(email), studentMailbox(studentID, s.studentEmailDomain)}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range result {
+			if strings.EqualFold(existing, value) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func identifiersOverlap(left, right []string) bool {
+	for _, first := range left {
+		for _, second := range right {
+			if strings.EqualFold(first, second) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *Store) createStudent(input StudentInput) (*AdminStudent, *apiError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	username := strings.TrimSpace(input.Username)
+	name := strings.TrimSpace(input.Name)
+	studentID := strings.TrimSpace(input.StudentID)
+	college := strings.TrimSpace(input.College)
+	year := strings.TrimSpace(input.Year)
+	if !validAcademicIdentifier(username, 64) || name == "" || len([]rune(name)) > 120 || !validAcademicIdentifier(studentID, 64) {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "username, name, and studentId are required")
+	}
+	if len([]rune(college)) > 255 || len([]rune(year)) > 32 {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "student profile fields are too long")
+	}
+	if !validateStudentPassword(input.Password) {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "student password must contain 12 to 256 characters")
+	}
+	email := strings.TrimSpace(input.Email)
+	if email != "" && !validateContactEmail(email) {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "a valid email address is required")
+	}
+	if email == "" {
+		email = studentMailbox(studentID, s.studentEmailDomain)
+	}
+	proposedIdentifiers := s.studentLoginIdentifiers(username, email, studentID)
+	for _, candidate := range s.users {
+		if candidate == nil {
+			continue
+		}
+		candidateIdentifiers := s.studentLoginIdentifiers(candidate.Username, candidate.Email, candidate.StudentID)
+		if strings.EqualFold(candidate.StudentID, studentID) || identifiersOverlap(proposedIdentifiers, candidateIdentifiers) {
+			return nil, apiErr(http.StatusConflict, "student_exists", "username, studentId, or email already exists")
+		}
+	}
+	item := &User{ID: "student-" + randomID(16), Username: username, Name: name, Email: email, Role: "student", PasswordHash: hashPassword(input.Password), StudentID: studentID, College: college, Year: year}
+	if err := s.persistUserLockedErr(item); err != nil {
+		return nil, apiErr(http.StatusServiceUnavailable, "student_persistence_failed", "student account could not be saved")
+	}
+	s.users[item.ID] = item
+	view := s.adminStudentView(item)
+	return &view, nil
+}
+
+func (s *Store) updateStudent(id string, input StudentInput) (*AdminStudent, *apiError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var item *User
+	for _, candidate := range s.users {
+		if candidate != nil && strings.EqualFold(candidate.ID, strings.TrimSpace(id)) {
+			item = candidate
+			break
+		}
+	}
+	if item == nil || item.Role != "student" {
+		return nil, apiErr(http.StatusNotFound, "student_not_found", "student not found")
+	}
+	previous := *item
+	username, name, studentID := strings.TrimSpace(input.Username), strings.TrimSpace(input.Name), strings.TrimSpace(input.StudentID)
+	if username == "" {
+		username = item.Username
+	}
+	if name == "" {
+		name = item.Name
+	}
+	if studentID == "" {
+		studentID = item.StudentID
+	}
+	if !validAcademicIdentifier(username, 64) || name == "" || len([]rune(name)) > 120 || !validAcademicIdentifier(studentID, 64) {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "username, name, and studentId are required")
+	}
+	college, year := strings.TrimSpace(input.College), strings.TrimSpace(input.Year)
+	if college == "" {
+		college = item.College
+	}
+	if year == "" {
+		year = item.Year
+	}
+	if len([]rune(college)) > 255 || len([]rune(year)) > 32 {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "student profile fields are too long")
+	}
+	email := strings.TrimSpace(input.Email)
+	if email == "" {
+		email = item.Email
+	}
+	if email == "" {
+		email = studentMailbox(studentID, s.studentEmailDomain)
+	}
+	if !validateContactEmail(email) {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "a valid email address is required")
+	}
+	if input.Password != "" && !validateStudentPassword(input.Password) {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "student password must contain 12 to 256 characters")
+	}
+	oldGenerated := studentMailbox(item.StudentID, s.studentEmailDomain)
+	if item.Email == oldGenerated && studentID != item.StudentID && (strings.TrimSpace(input.Email) == "" || strings.EqualFold(strings.TrimSpace(input.Email), oldGenerated)) {
+		email = studentMailbox(studentID, s.studentEmailDomain)
+	}
+	proposedIdentifiers := s.studentLoginIdentifiers(username, email, studentID)
+	for _, candidate := range s.users {
+		if candidate == nil || candidate.ID == item.ID {
+			continue
+		}
+		candidateIdentifiers := s.studentLoginIdentifiers(candidate.Username, candidate.Email, candidate.StudentID)
+		if strings.EqualFold(candidate.StudentID, studentID) || identifiersOverlap(proposedIdentifiers, candidateIdentifiers) {
+			return nil, apiErr(http.StatusConflict, "student_exists", "username, studentId, or email already exists")
+		}
+	}
+	item.Username, item.Name, item.Email, item.StudentID, item.College, item.Year = username, name, email, studentID, college, year
+	if input.Password != "" {
+		item.PasswordHash = hashPassword(input.Password)
+	}
+	if err := s.persistUserLockedErr(item); err != nil {
+		*item = previous
+		return nil, apiErr(http.StatusServiceUnavailable, "student_persistence_failed", "student account could not be saved")
+	}
+	view := s.adminStudentView(item)
+	return &view, nil
+}
+
+func normalizeStudentEmailDomain(value string) string {
+	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+	if domain == "" || len(domain) > 253 || strings.ContainsAny(domain, "@/\\ \t\r\n") {
+		return "cgu.edu.kg"
+	}
+	for _, r := range domain {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '-' {
+			continue
+		}
+		return "cgu.edu.kg"
+	}
+	return domain
+}
+
+func studentMailbox(studentID, domain string) string {
+	local := strings.ToLower(strings.TrimSpace(studentID))
+	if local == "" || len(local) > 64 || strings.HasPrefix(local, ".") || strings.HasSuffix(local, ".") || strings.Contains(local, "..") {
+		return ""
+	}
+	for _, r := range local {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return ""
+	}
+	return local + "@" + normalizeStudentEmailDomain(domain)
 }
 
 func (s *Store) coursesFor(viewer *User, adminView bool) []Course {
@@ -377,7 +727,7 @@ func (s *Store) announcementsFor(viewer *User, adminView bool) []Announcement {
 func (s *Store) stats() map[string]int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	students, pending, sections := 0, 0, 0
+	students, pending, sections, pendingAdmissions := 0, 0, 0, 0
 	for _, user := range s.users {
 		if user.Role == "student" {
 			students++
@@ -388,12 +738,105 @@ func (s *Store) stats() map[string]int {
 			pending++
 		}
 	}
+	for _, item := range s.admissions {
+		if item != nil && (strings.EqualFold(item.Status, "pending") || strings.EqualFold(item.Status, "reviewing")) {
+			pendingAdmissions++
+		}
+	}
 	for _, item := range s.courses {
 		if item.Capacity > 0 {
 			sections++
 		}
 	}
-	return map[string]int{"courses": len(s.courses), "students": students, "sections": sections, "pending": pending}
+	return map[string]int{
+		"courses":           len(s.courses),
+		"students":          students,
+		"sections":          sections,
+		"admissions":        len(s.admissions),
+		"pendingAdmissions": pendingAdmissions,
+		"pending":           pending + pendingAdmissions,
+	}
+}
+
+func (s *Store) admissionsList() []AdmissionApplication {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]AdmissionApplication, 0, len(s.admissions))
+	for _, item := range s.admissions {
+		if item == nil {
+			continue
+		}
+		result = append(result, *item)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return result[i].CreatedAt > result[j].CreatedAt
+	})
+	return result
+}
+
+func (s *Store) createAdmission(input AdmissionApplicationInput) (*AdmissionApplication, *apiError) {
+	// Public submissions cannot choose a workflow state or inject internal notes.
+	input.Status = ""
+	input.Notes = ""
+	item, err := normalizeAdmission(input, nil)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.admissions = append(s.admissions, item)
+	if err := s.persistAdmissionLocked(item); err != nil {
+		s.admissions = s.admissions[:len(s.admissions)-1]
+		return nil, apiErr(http.StatusServiceUnavailable, "admission_persistence_failed", "application could not be saved")
+	}
+	copy := *item
+	return &copy, nil
+}
+
+func (s *Store) updateAdmission(id string, input AdmissionApplicationInput) (*AdmissionApplication, *apiError) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, apiErr(http.StatusNotFound, "admission_not_found", "application not found")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, item := range s.admissions {
+		if item == nil || !strings.EqualFold(item.ID, id) {
+			continue
+		}
+		previous := *item
+		normalized, err := normalizeAdmission(input, item)
+		if err != nil {
+			return nil, err
+		}
+		*item = *normalized
+		if err := s.persistAdmissionLocked(item); err != nil {
+			*item = previous
+			return nil, apiErr(http.StatusServiceUnavailable, "admission_persistence_failed", "application could not be saved")
+		}
+		copy := *item
+		return &copy, nil
+	}
+	return nil, apiErr(http.StatusNotFound, "admission_not_found", "application not found")
+}
+
+func (s *Store) deleteAdmission(id string) (*AdmissionApplication, *apiError) {
+	id = strings.TrimSpace(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, item := range s.admissions {
+		if item == nil || !strings.EqualFold(item.ID, id) {
+			continue
+		}
+		copy := *item
+		s.admissions = append(s.admissions[:i], s.admissions[i+1:]...)
+		if err := s.deleteAdmissionPersistedLocked(id); err != nil {
+			s.admissions = append(s.admissions[:i], append([]*AdmissionApplication{item}, s.admissions[i:]...)...)
+			return nil, apiErr(http.StatusServiceUnavailable, "admission_persistence_failed", "application could not be deleted")
+		}
+		return &copy, nil
+	}
+	return nil, apiErr(http.StatusNotFound, "admission_not_found", "application not found")
 }
 
 func defaultSiteContent() map[string]*SiteContent {
@@ -597,6 +1040,334 @@ func (s *Store) changeEnrollment(studentID, courseID, action string) (*Enrollmen
 	s.persistEnrollmentLocked(current)
 	copy := *current
 	return &copy, nil
+}
+
+func academicValue(value any) (string, *apiError) {
+	if value == nil {
+		return "", nil
+	}
+	var result string
+	switch typed := value.(type) {
+	case string:
+		result = strings.TrimSpace(typed)
+	case json.Number:
+		result = string(typed)
+	case float64:
+		result = strconv.FormatFloat(typed, 'f', -1, 64)
+	case float32:
+		result = strconv.FormatFloat(float64(typed), 'f', -1, 32)
+	case int:
+		result = strconv.Itoa(typed)
+	case int64:
+		result = strconv.FormatInt(typed, 10)
+	case uint64:
+		result = strconv.FormatUint(typed, 10)
+	default:
+		return "", apiErr(http.StatusBadRequest, "invalid_input", "academic values must be text or numbers")
+	}
+	if len(result) > 32 || strings.ContainsAny(result, "\r\n") {
+		return "", apiErr(http.StatusBadRequest, "invalid_input", "academic values are too long")
+	}
+	return result, nil
+}
+
+func (s *Store) normalizeGradeLocked(input GradeInput, existing *Grade) (*Grade, *apiError) {
+	studentRef := strings.TrimSpace(input.StudentID)
+	if studentRef == "" && existing != nil {
+		studentRef = existing.StudentID
+	}
+	student := s.resolveStudentLocked(studentRef)
+	if student == nil {
+		return nil, apiErr(http.StatusBadRequest, "student_not_found", "student not found")
+	}
+	courseRef := strings.TrimSpace(input.CourseID)
+	if courseRef == "" {
+		courseRef = strings.TrimSpace(input.CourseCode)
+	}
+	if courseRef == "" && existing != nil {
+		courseRef = existing.CourseID
+	}
+	var course *Course
+	for _, candidate := range s.courses {
+		if candidate != nil && (strings.EqualFold(candidate.ID, courseRef) || strings.EqualFold(candidate.Code, courseRef)) {
+			course = candidate
+			break
+		}
+	}
+	if course == nil {
+		return nil, apiErr(http.StatusBadRequest, "course_not_found", "course not found")
+	}
+	score := ""
+	point := ""
+	if existing != nil {
+		score, point = fmt.Sprint(existing.Score), fmt.Sprint(existing.Point)
+		if existing.Score == nil {
+			score = ""
+		}
+		if existing.Point == nil {
+			point = ""
+		}
+	}
+	if input.Score != nil {
+		var err *apiError
+		score, err = academicValue(input.Score)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if input.Point != nil {
+		var err *apiError
+		point, err = academicValue(input.Point)
+		if err != nil {
+			return nil, err
+		}
+	}
+	term := strings.TrimSpace(input.Term)
+	if term == "" && existing != nil {
+		term = existing.Term
+	}
+	if term == "" {
+		term = course.Term
+	}
+	status := strings.ToLower(strings.TrimSpace(input.Status))
+	if status == "" && existing != nil {
+		status = strings.ToLower(strings.TrimSpace(existing.Status))
+	}
+	if status == "" {
+		status = "graded"
+	}
+	if status == "in_progress" {
+		status = "inprogress"
+	}
+	switch status {
+	case "inprogress", "graded", "published", "withdrawn":
+	default:
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "grade status is not supported")
+	}
+	credits := int(course.Credits)
+	if existing != nil {
+		credits = existing.Credits
+	}
+	if input.Credits != nil {
+		credits = *input.Credits
+	}
+	if credits < 0 || credits > 100 {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "grade credits are out of range")
+	}
+	id := strings.TrimSpace(input.ID)
+	if id == "" && existing != nil {
+		id = existing.ID
+	}
+	if id == "" {
+		id = "grade-" + randomID(16)
+	}
+	return &Grade{ID: id, StudentID: student.ID, CourseID: course.ID, CourseCode: course.Code, CourseNameZh: course.NameZh, CourseNameEn: course.NameEn, Score: score, Point: point, Term: term, Status: status, Credits: credits}, nil
+}
+
+func (s *Store) createGrade(input GradeInput) (*Grade, *apiError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, err := s.normalizeGradeLocked(input, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range s.grades {
+		if candidate != nil && strings.EqualFold(candidate.ID, item.ID) {
+			return nil, apiErr(http.StatusConflict, "grade_exists", "grade already exists")
+		}
+	}
+	if err := s.persistGradeLocked(item); err != nil {
+		return nil, apiErr(http.StatusServiceUnavailable, "grade_persistence_failed", "grade could not be saved")
+	}
+	s.grades = append(s.grades, item)
+	copy := *item
+	return &copy, nil
+}
+
+func (s *Store) updateGrade(id string, input GradeInput) (*Grade, *apiError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index, candidate := range s.grades {
+		if candidate == nil || !strings.EqualFold(candidate.ID, strings.TrimSpace(id)) {
+			continue
+		}
+		input.ID = candidate.ID
+		item, err := s.normalizeGradeLocked(input, candidate)
+		if err != nil {
+			return nil, err
+		}
+		if persistErr := s.persistGradeLocked(item); persistErr != nil {
+			return nil, apiErr(http.StatusServiceUnavailable, "grade_persistence_failed", "grade could not be saved")
+		}
+		s.grades[index] = item
+		copy := *item
+		return &copy, nil
+	}
+	return nil, apiErr(http.StatusNotFound, "grade_not_found", "grade not found")
+}
+
+func (s *Store) deleteGrade(id string) (*Grade, *apiError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index, candidate := range s.grades {
+		if candidate == nil || !strings.EqualFold(candidate.ID, strings.TrimSpace(id)) {
+			continue
+		}
+		copy := *candidate
+		if err := s.deleteGradePersistedLocked(candidate.ID); err != nil {
+			return nil, apiErr(http.StatusServiceUnavailable, "grade_persistence_failed", "grade could not be deleted")
+		}
+		s.grades = append(s.grades[:index], s.grades[index+1:]...)
+		return &copy, nil
+	}
+	return nil, apiErr(http.StatusNotFound, "grade_not_found", "grade not found")
+}
+
+func normalizeScheduleClock(value string) (string, bool) {
+	parsed, err := time.Parse("15:04", strings.TrimSpace(value))
+	if err != nil {
+		return "", false
+	}
+	return parsed.Format("15:04"), true
+}
+
+func (s *Store) normalizeScheduleLocked(input ScheduleInput, existing *ScheduleEntry) (*ScheduleEntry, *apiError) {
+	studentRef := strings.TrimSpace(input.StudentID)
+	if studentRef == "" && existing != nil {
+		studentRef = existing.StudentID
+	}
+	student := s.resolveStudentLocked(studentRef)
+	if student == nil {
+		return nil, apiErr(http.StatusBadRequest, "student_not_found", "student not found")
+	}
+	courseRef := strings.TrimSpace(input.CourseID)
+	if courseRef == "" {
+		courseRef = strings.TrimSpace(input.CourseCode)
+	}
+	if courseRef == "" && existing != nil {
+		courseRef = existing.CourseID
+	}
+	var course *Course
+	for _, candidate := range s.courses {
+		if candidate != nil && (strings.EqualFold(candidate.ID, courseRef) || strings.EqualFold(candidate.Code, courseRef)) {
+			course = candidate
+			break
+		}
+	}
+	if course == nil {
+		return nil, apiErr(http.StatusBadRequest, "course_not_found", "course not found")
+	}
+	day := 0
+	if existing != nil {
+		day = existing.Day
+	}
+	if input.Day != nil {
+		day = *input.Day
+	}
+	if day < 1 || day > 7 {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "schedule day must be between 1 and 7")
+	}
+	start, end := strings.TrimSpace(input.Start), strings.TrimSpace(input.End)
+	if start == "" && existing != nil {
+		start = existing.Start
+	}
+	if end == "" && existing != nil {
+		end = existing.End
+	}
+	start, startOK := normalizeScheduleClock(start)
+	end, endOK := normalizeScheduleClock(end)
+	if !startOK || !endOK {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "schedule times must use HH:MM")
+	}
+	startTime, _ := time.Parse("15:04", start)
+	endTime, _ := time.Parse("15:04", end)
+	if !endTime.After(startTime) {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "schedule end time must be after start time")
+	}
+	location := strings.TrimSpace(input.Location)
+	if location == "" && existing != nil {
+		location = existing.Location
+	}
+	if location == "" {
+		location = "待定"
+	}
+	teacher := strings.TrimSpace(input.Teacher)
+	if teacher == "" && existing != nil {
+		teacher = existing.Teacher
+	}
+	if teacher == "" {
+		teacher = course.Teacher
+	}
+	if len([]rune(location)) > 255 || len([]rune(teacher)) > 255 {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "schedule fields are too long")
+	}
+	id := strings.TrimSpace(input.ID)
+	if id == "" && existing != nil {
+		id = existing.ID
+	}
+	if id == "" {
+		id = "schedule-" + randomID(16)
+	}
+	return &ScheduleEntry{ID: id, StudentID: student.ID, CourseID: course.ID, CourseCode: course.Code, CourseNameZh: course.NameZh, CourseNameEn: course.NameEn, Day: day, Start: start, End: end, Location: location, Teacher: teacher}, nil
+}
+
+func (s *Store) createSchedule(input ScheduleInput) (*ScheduleEntry, *apiError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, err := s.normalizeScheduleLocked(input, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range s.schedule {
+		if candidate != nil && strings.EqualFold(candidate.ID, item.ID) {
+			return nil, apiErr(http.StatusConflict, "schedule_exists", "schedule entry already exists")
+		}
+	}
+	if err := s.persistScheduleLocked(item); err != nil {
+		return nil, apiErr(http.StatusServiceUnavailable, "schedule_persistence_failed", "schedule entry could not be saved")
+	}
+	s.schedule = append(s.schedule, item)
+	copy := *item
+	return &copy, nil
+}
+
+func (s *Store) updateSchedule(id string, input ScheduleInput) (*ScheduleEntry, *apiError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index, candidate := range s.schedule {
+		if candidate == nil || !strings.EqualFold(candidate.ID, strings.TrimSpace(id)) {
+			continue
+		}
+		input.ID = candidate.ID
+		item, err := s.normalizeScheduleLocked(input, candidate)
+		if err != nil {
+			return nil, err
+		}
+		if persistErr := s.persistScheduleLocked(item); persistErr != nil {
+			return nil, apiErr(http.StatusServiceUnavailable, "schedule_persistence_failed", "schedule entry could not be saved")
+		}
+		s.schedule[index] = item
+		copy := *item
+		return &copy, nil
+	}
+	return nil, apiErr(http.StatusNotFound, "schedule_not_found", "schedule entry not found")
+}
+
+func (s *Store) deleteSchedule(id string) (*ScheduleEntry, *apiError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index, candidate := range s.schedule {
+		if candidate == nil || !strings.EqualFold(candidate.ID, strings.TrimSpace(id)) {
+			continue
+		}
+		copy := *candidate
+		if err := s.deleteSchedulePersistedLocked(candidate.ID); err != nil {
+			return nil, apiErr(http.StatusServiceUnavailable, "schedule_persistence_failed", "schedule entry could not be deleted")
+		}
+		s.schedule = append(s.schedule[:index], s.schedule[index+1:]...)
+		return &copy, nil
+	}
+	return nil, apiErr(http.StatusNotFound, "schedule_not_found", "schedule entry not found")
 }
 
 func (s *Store) createCourse(input CourseInput) (*Course, *apiError) {
@@ -855,6 +1626,64 @@ func normalizeAnnouncement(input AnnouncementInput, existing *Announcement) (*An
 	return &Announcement{ID: id, TitleZh: titleZh, TitleEn: titleEn, ContentZh: contentZh, ContentEn: contentEn, Type: typ, Audience: audience, CourseID: courseID, PublishedAt: publishedAt, Published: published, Author: author}, nil
 }
 
+func normalizeAdmission(input AdmissionApplicationInput, existing *AdmissionApplication) (*AdmissionApplication, *apiError) {
+	name := strings.TrimSpace(input.Name)
+	email := strings.TrimSpace(input.Email)
+	school := strings.TrimSpace(input.School)
+	status := strings.ToLower(strings.TrimSpace(input.Status))
+	notes := strings.TrimSpace(input.Notes)
+	if existing != nil {
+		if name == "" {
+			name = existing.Name
+		}
+		if email == "" {
+			email = existing.Email
+		}
+		if school == "" {
+			school = existing.School
+		}
+		if status == "" {
+			status = existing.Status
+		}
+		if input.Notes == "" {
+			notes = existing.Notes
+		}
+	}
+	if name == "" || email == "" || school == "" {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "name, email, and school are required")
+	}
+	if len([]rune(name)) > 120 || len([]rune(school)) > 160 || len([]rune(notes)) > 2000 {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "application fields are too long")
+	}
+	if len(email) > 254 || strings.ContainsAny(email, "\r\n") {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "a valid email address is required")
+	}
+	parsed, err := mail.ParseAddress(email)
+	if err != nil || parsed.Address != email || !strings.Contains(email, "@") {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "a valid email address is required")
+	}
+	if status == "" {
+		status = "pending"
+	}
+	switch status {
+	case "pending", "reviewing", "contacted", "accepted", "rejected", "withdrawn":
+	default:
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "status is not supported")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	id := ""
+	createdAt := now
+	updatedAt := now
+	if existing != nil {
+		id = existing.ID
+		createdAt = existing.CreatedAt
+	}
+	if id == "" {
+		id = "application-" + randomID(16)
+	}
+	return &AdmissionApplication{ID: id, Name: name, Email: email, School: school, Status: status, Notes: notes, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+}
+
 func first(values ...string) string {
 	for _, value := range values {
 		if value = strings.TrimSpace(value); value != "" {
@@ -865,16 +1694,19 @@ func first(values ...string) string {
 }
 
 type Server struct {
-	store         *Store
-	staticDir     string
-	publicOrigin  string
-	sessions      map[string]session
-	sessionsMu    sync.Mutex
-	loginMu       sync.Mutex
-	loginAttempts map[string]*loginAttempt
-	cookieSecure  bool
-	storageMode   string
-	storageMu     sync.RWMutex
+	store             *Store
+	staticDir         string
+	publicOrigin      string
+	trustedProxies    []netip.Prefix
+	sessions          map[string]session
+	sessionsMu        sync.Mutex
+	loginMu           sync.Mutex
+	loginAttempts     map[string]*loginAttempt
+	admissionMu       sync.Mutex
+	admissionAttempts map[string]*admissionAttempt
+	cookieSecure      bool
+	storageMode       string
+	storageMu         sync.RWMutex
 }
 
 type loginAttempt struct {
@@ -883,12 +1715,38 @@ type loginAttempt struct {
 	blockedTo  time.Time
 }
 
+type admissionAttempt struct {
+	count      int
+	windowFrom time.Time
+}
+
 func NewServer(store *Store, staticDir string) *Server {
 	if strings.TrimSpace(staticDir) == "" {
 		staticDir = "web"
 	}
 	secure := strings.EqualFold(os.Getenv("CGU_COOKIE_SECURE"), "1") || strings.EqualFold(os.Getenv("CGU_COOKIE_SECURE"), "true")
-	return &Server{store: store, staticDir: staticDir, sessions: make(map[string]session), loginAttempts: make(map[string]*loginAttempt), cookieSecure: secure, storageMode: "memory"}
+	return &Server{store: store, staticDir: staticDir, sessions: make(map[string]session), loginAttempts: make(map[string]*loginAttempt), admissionAttempts: make(map[string]*admissionAttempt), cookieSecure: secure, storageMode: "memory"}
+}
+
+func (s *Server) setTrustedProxies(values []string) error {
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			address, addressErr := netip.ParseAddr(value)
+			if addressErr != nil {
+				return fmt.Errorf("invalid trusted proxy %q", value)
+			}
+			prefix = netip.PrefixFrom(address, address.BitLen())
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	s.trustedProxies = prefixes
+	return nil
 }
 
 func (s *Server) setStorageMode(mode string) {
@@ -1013,6 +1871,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "announcements": s.store.announcementsFor(s.currentUser(r), false)})
 	case p == "/api/site-content" && r.Method == http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": s.store.siteContentList()})
+	case p == "/api/admissions" && r.Method == http.MethodPost:
+		s.submitAdmission(w, r)
+	case p == "/api/admissions":
+		methodNotAllowed(w, http.MethodPost)
 	case p == "/api/announcements" && r.Method == http.MethodPost:
 		if !s.requireAdmin(w, r) {
 			return
@@ -1072,6 +1934,73 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		} else {
 			methodNotAllowed(w, http.MethodPatch, http.MethodPut, http.MethodDelete)
 		}
+	case p == "/api/admin/students":
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "students": s.store.studentsForAdmin()})
+		} else if r.Method == http.MethodPost {
+			s.createStudent(w, r)
+		} else {
+			methodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
+	case strings.HasPrefix(p, "/api/admin/students/"):
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		id := decodePathID(strings.TrimPrefix(p, "/api/admin/students/"))
+		if r.Method == http.MethodPatch || r.Method == http.MethodPut {
+			s.updateStudent(w, r, id)
+		} else {
+			methodNotAllowed(w, http.MethodPatch, http.MethodPut)
+		}
+	case p == "/api/admin/grades":
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		if r.Method == http.MethodGet {
+			s.listAdminGrades(w, r)
+		} else if r.Method == http.MethodPost {
+			s.createGrade(w, r)
+		} else {
+			methodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
+	case strings.HasPrefix(p, "/api/admin/grades/"):
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		id := decodePathID(strings.TrimPrefix(p, "/api/admin/grades/"))
+		if r.Method == http.MethodPatch || r.Method == http.MethodPut {
+			s.updateGrade(w, r, id)
+		} else if r.Method == http.MethodDelete {
+			s.deleteGrade(w, id)
+		} else {
+			methodNotAllowed(w, http.MethodPatch, http.MethodPut, http.MethodDelete)
+		}
+	case p == "/api/admin/schedule":
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		if r.Method == http.MethodGet {
+			s.listAdminSchedule(w, r)
+		} else if r.Method == http.MethodPost {
+			s.createSchedule(w, r)
+		} else {
+			methodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
+	case strings.HasPrefix(p, "/api/admin/schedule/"):
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		id := decodePathID(strings.TrimPrefix(p, "/api/admin/schedule/"))
+		if r.Method == http.MethodPatch || r.Method == http.MethodPut {
+			s.updateSchedule(w, r, id)
+		} else if r.Method == http.MethodDelete {
+			s.deleteSchedule(w, id)
+		} else {
+			methodNotAllowed(w, http.MethodPatch, http.MethodPut, http.MethodDelete)
+		}
 	case p == "/api/admin/announcements":
 		if !s.requireAdmin(w, r) {
 			return
@@ -1093,6 +2022,27 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			s.updateSiteContent(w, r)
 		} else {
 			methodNotAllowed(w, http.MethodGet, http.MethodPut, http.MethodPost)
+		}
+	case p == "/api/admin/admissions":
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applications": s.store.admissionsList()})
+		} else {
+			methodNotAllowed(w, http.MethodGet)
+		}
+	case strings.HasPrefix(p, "/api/admin/admissions/"):
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		id := decodePathID(strings.TrimPrefix(p, "/api/admin/admissions/"))
+		if r.Method == http.MethodDelete {
+			s.deleteAdmission(w, id)
+		} else if r.Method == http.MethodPatch || r.Method == http.MethodPut {
+			s.updateAdmission(w, r, id)
+		} else {
+			methodNotAllowed(w, http.MethodPatch, http.MethodPut, http.MethodDelete)
 		}
 	case strings.HasPrefix(p, "/api/admin/announcements/"):
 		if !s.requireAdmin(w, r) {
@@ -1122,7 +2072,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErr(400, "invalid_input", "username and password are required"))
 		return
 	}
-	rateKey := loginRateKey(r, identifier)
+	rateKey := s.loginRateKey(r, identifier)
 	if retry, allowed := s.loginAllowed(rateKey); !allowed {
 		seconds := int(retry / time.Second)
 		if retry%time.Second != 0 {
@@ -1211,6 +2161,13 @@ func (s *Server) changeEnrollment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listGrades(w http.ResponseWriter, r *http.Request) {
 	user := s.currentUser(r)
 	target := queryStudent(r, user)
+	if user.Role == "admin" && hasStudentQuery(r) {
+		target = s.store.studentRecordID(target)
+		if target == "" {
+			writeError(w, apiErr(http.StatusNotFound, "student_not_found", "student not found"))
+			return
+		}
+	}
 	if user.Role != "admin" && target != user.ID {
 		writeError(w, apiErr(403, "forbidden", "students may only view their own grades"))
 		return
@@ -1221,6 +2178,13 @@ func (s *Server) listGrades(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listSchedule(w http.ResponseWriter, r *http.Request) {
 	user := s.currentUser(r)
 	target := queryStudent(r, user)
+	if user.Role == "admin" && hasStudentQuery(r) {
+		target = s.store.studentRecordID(target)
+		if target == "" {
+			writeError(w, apiErr(http.StatusNotFound, "student_not_found", "student not found"))
+			return
+		}
+	}
 	if user.Role != "admin" && target != user.ID {
 		writeError(w, apiErr(403, "forbidden", "students may only view their own schedule"))
 		return
@@ -1265,6 +2229,139 @@ func (s *Server) updateCourse(w http.ResponseWriter, r *http.Request, id string)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "course": item})
+}
+
+func (s *Server) createStudent(w http.ResponseWriter, r *http.Request) {
+	var input StudentInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, apiErr(http.StatusBadRequest, "invalid_input", "student account is required"))
+		return
+	}
+	item, apiError := s.store.createStudent(input)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	w.Header().Set("Location", "/api/admin/students/"+url.PathEscape(item.ID))
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "student": item})
+}
+
+func (s *Server) updateStudent(w http.ResponseWriter, r *http.Request, id string) {
+	var input StudentInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, apiErr(http.StatusBadRequest, "invalid_input", "student update is required"))
+		return
+	}
+	item, apiError := s.store.updateStudent(id, input)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "student": item})
+}
+
+func (s *Server) listAdminGrades(w http.ResponseWriter, r *http.Request) {
+	studentRef := strings.TrimSpace(first(r.URL.Query().Get("student_id"), r.URL.Query().Get("user_id")))
+	if studentRef != "" {
+		studentID := s.store.studentRecordID(studentRef)
+		if studentID == "" {
+			writeError(w, apiErr(http.StatusNotFound, "student_not_found", "student not found"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "grades": s.store.gradesFor(studentID, false)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "grades": s.store.gradesFor("", true)})
+}
+
+func (s *Server) createGrade(w http.ResponseWriter, r *http.Request) {
+	var input GradeInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, apiErr(http.StatusBadRequest, "invalid_input", "grade is required"))
+		return
+	}
+	item, apiError := s.store.createGrade(input)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	w.Header().Set("Location", "/api/admin/grades/"+url.PathEscape(item.ID))
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "grade": item})
+}
+
+func (s *Server) updateGrade(w http.ResponseWriter, r *http.Request, id string) {
+	var input GradeInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, apiErr(http.StatusBadRequest, "invalid_input", "grade update is required"))
+		return
+	}
+	item, apiError := s.store.updateGrade(id, input)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "grade": item})
+}
+
+func (s *Server) deleteGrade(w http.ResponseWriter, id string) {
+	item, apiError := s.store.deleteGrade(id)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "grade": item})
+}
+
+func (s *Server) listAdminSchedule(w http.ResponseWriter, r *http.Request) {
+	studentRef := strings.TrimSpace(first(r.URL.Query().Get("student_id"), r.URL.Query().Get("user_id")))
+	if studentRef != "" {
+		studentID := s.store.studentRecordID(studentRef)
+		if studentID == "" {
+			writeError(w, apiErr(http.StatusNotFound, "student_not_found", "student not found"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "schedule": s.store.scheduleFor(studentID, false)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "schedule": s.store.scheduleFor("", true)})
+}
+
+func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
+	var input ScheduleInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, apiErr(http.StatusBadRequest, "invalid_input", "schedule entry is required"))
+		return
+	}
+	item, apiError := s.store.createSchedule(input)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	w.Header().Set("Location", "/api/admin/schedule/"+url.PathEscape(item.ID))
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "schedule": item})
+}
+
+func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request, id string) {
+	var input ScheduleInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, apiErr(http.StatusBadRequest, "invalid_input", "schedule update is required"))
+		return
+	}
+	item, apiError := s.store.updateSchedule(id, input)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "schedule": item})
+}
+
+func (s *Server) deleteSchedule(w http.ResponseWriter, id string) {
+	item, apiError := s.store.deleteSchedule(id)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "schedule": item})
 }
 
 func (s *Server) deleteCourse(w http.ResponseWriter, id string) {
@@ -1326,6 +2423,60 @@ func (s *Server) updateSiteContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": item})
+}
+
+func (s *Server) submitAdmission(w http.ResponseWriter, r *http.Request) {
+	var input AdmissionApplicationInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, apiErr(http.StatusBadRequest, "invalid_input", "name, email, and school are required"))
+		return
+	}
+	if retry, allowed := s.admissionAllowed(s.admissionRateKey(r)); !allowed {
+		seconds := int(retry / time.Second)
+		if retry%time.Second != 0 {
+			seconds++
+		}
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		writeError(w, apiErr(http.StatusTooManyRequests, "admission_rate_limited", "too many applications from this client; try again later"))
+		return
+	}
+	item, apiError := s.store.createAdmission(input)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	w.Header().Set("Location", "/api/admissions/"+url.PathEscape(item.ID))
+	// Do not echo contact details from a public endpoint; the authenticated
+	// administrator list is the only API that exposes applicant PII.
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "application": map[string]any{
+		"id": item.ID, "status": item.Status, "createdAt": item.CreatedAt,
+	}})
+}
+
+func (s *Server) updateAdmission(w http.ResponseWriter, r *http.Request, id string) {
+	var input AdmissionApplicationInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, apiErr(http.StatusBadRequest, "invalid_input", "application update is required"))
+		return
+	}
+	item, apiError := s.store.updateAdmission(id, input)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "application": item})
+}
+
+func (s *Server) deleteAdmission(w http.ResponseWriter, id string) {
+	item, apiError := s.store.deleteAdmission(id)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "application": item})
 }
 
 func (s *Server) currentUser(r *http.Request) *User {
@@ -1475,15 +2626,8 @@ func stateChangingAPIRequest(r *http.Request) bool {
 	}
 }
 
-func loginRateKey(r *http.Request, identifier string) string {
-	client := strings.TrimSpace(r.RemoteAddr)
-	if host, _, err := net.SplitHostPort(client); err == nil && host != "" {
-		client = host
-	}
-	if client == "" {
-		client = "unknown"
-	}
-	return strings.ToLower(client) + "\x00" + strings.ToLower(strings.TrimSpace(identifier))
+func (s *Server) loginRateKey(r *http.Request, identifier string) string {
+	return s.clientRateAddress(r) + "\x00" + strings.ToLower(strings.TrimSpace(identifier))
 }
 
 func (s *Server) loginAllowed(key string) (time.Duration, bool) {
@@ -1544,6 +2688,98 @@ func (s *Server) pruneLoginAttemptsLocked(now time.Time) {
 	}
 }
 
+func (s *Server) admissionAllowed(key string) (time.Duration, bool) {
+	now := time.Now()
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+	for candidate, item := range s.admissionAttempts {
+		if item == nil || now.Sub(item.windowFrom) >= admissionWindow {
+			delete(s.admissionAttempts, candidate)
+		}
+	}
+	item := s.admissionAttempts[key]
+	if item == nil {
+		if len(s.admissionAttempts) >= admissionMaxKeys {
+			var oldestKey string
+			var oldest time.Time
+			for candidate, attempt := range s.admissionAttempts {
+				if oldestKey == "" || attempt.windowFrom.Before(oldest) {
+					oldestKey, oldest = candidate, attempt.windowFrom
+				}
+			}
+			if oldestKey != "" {
+				delete(s.admissionAttempts, oldestKey)
+			}
+		}
+		item = &admissionAttempt{windowFrom: now}
+		s.admissionAttempts[key] = item
+	}
+	if item.count >= admissionMax {
+		return time.Until(item.windowFrom.Add(admissionWindow)), false
+	}
+	item.count++
+	return 0, true
+}
+
+func (s *Server) admissionRateKey(r *http.Request) string {
+	return s.clientRateAddress(r)
+}
+
+func (s *Server) clientRateAddress(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	remote, ok := parseRateAddress(r.RemoteAddr)
+	if !ok {
+		return "unknown"
+	}
+	if !s.isTrustedProxy(remote) {
+		return remote.String()
+	}
+	forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if forwarded == "" {
+		return remote.String()
+	}
+	parts := strings.Split(forwarded, ",")
+	candidate := remote
+	for i := len(parts) - 1; i >= 0; i-- {
+		address, valid := parseRateAddress(parts[i])
+		if !valid {
+			return remote.String()
+		}
+		candidate = address
+		if !s.isTrustedProxy(address) {
+			return address.String()
+		}
+	}
+	return candidate.String()
+}
+
+func (s *Server) isTrustedProxy(address netip.Addr) bool {
+	address = address.Unmap()
+	for _, prefix := range s.trustedProxies {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseRateAddress(raw string) (netip.Addr, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return netip.Addr{}, false
+	}
+	if addressPort, err := netip.ParseAddrPort(raw); err == nil {
+		return addressPort.Addr().Unmap(), true
+	}
+	address, err := netip.ParseAddr(strings.Trim(raw, "[]"))
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return address.Unmap(), true
+}
+
 func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
 	origin, originOK := normalizeOrigin(r.Header.Get("Origin"))
 	if originOK && s.originAllowed(&http.Request{Method: http.MethodPost, URL: r.URL, Host: r.Host, Header: r.Header, TLS: r.TLS}) {
@@ -1587,6 +2823,12 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 	if info, statErr := os.Stat(candidate); statErr != nil || info.IsDir() {
 		http.NotFound(w, r)
 		return
+	}
+	switch strings.ToLower(filepath.Ext(candidate)) {
+	case ".html", ".js", ".css":
+		// Revalidate executable UI assets so a deployment cannot leave new HTML
+		// paired with an older cached script.
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	}
 	http.ServeFile(w, r, candidate)
 }
@@ -1755,7 +2997,7 @@ func main() {
 	if !strings.Contains(addr, ":") {
 		addr = ":" + addr
 	}
-	store := NewStoreWithAdmin(cfg.AdminUsername, cfg.AdminPassword)
+	store := NewStoreWithAdminAndDomain(cfg.AdminUsername, cfg.AdminPassword, cfg.StudentEmailDomain)
 	storageMode := "memory"
 	var database *sql.DB
 	if cfg.Database.Enabled {
@@ -1778,6 +3020,9 @@ func main() {
 	}
 	handler := NewServer(store, cfg.StaticDir)
 	// LoadConfig already applies environment, .env, and config.json precedence.
+	if err := handler.setTrustedProxies(cfg.TrustedProxies); err != nil {
+		log.Fatalf("trusted proxy configuration is invalid: %v", err)
+	}
 	if strings.TrimSpace(cfg.PublicOrigin) != "" {
 		publicOrigin, ok := normalizeOrigin(cfg.PublicOrigin)
 		if !ok {

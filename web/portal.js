@@ -22,6 +22,10 @@
     announcements: [],
     adminCourses: [],
     adminAnnouncements: [],
+    adminAdmissions: [],
+    adminStudents: [],
+    adminGrades: [],
+    adminSchedule: [],
     adminSiteContent: [],
     adminStats: {},
     toastTimer: 0
@@ -128,6 +132,7 @@
       role: role === 'administrator' || role === 'staff' ? 'admin' : role,
       studentId: user.studentId ?? user.student_id ?? user.id ?? '—',
       email: user.email ?? '—',
+      studentEmail: user.studentEmail ?? user.student_email ?? '',
       college: user.college ?? user.school ?? user.department ?? '—',
       year: user.year ?? user.grade ?? user.enrollmentYear ?? '—'
     };
@@ -205,6 +210,45 @@
     zh: String(value.zh ?? value.zhText ?? value.zh_text ?? ''),
     en: String(value.en ?? value.enText ?? value.en_text ?? ''),
     updatedAt: value.updatedAt ?? value.updated_at ?? ''
+  });
+
+  const normalizeAdmission = (value = {}) => ({
+    ...value,
+    id: value.id ?? value.applicationId ?? value.application_id ?? '',
+    name: String(value.name ?? value.applicantName ?? '').trim(),
+    email: String(value.email ?? '').trim(),
+    school: String(value.school ?? value.program ?? '').trim(),
+    status: String(value.status ?? 'pending').toLowerCase(),
+    notes: String(value.notes ?? '').trim(),
+    createdAt: value.createdAt ?? value.created_at ?? value.submittedAt ?? '',
+    updatedAt: value.updatedAt ?? value.updated_at ?? ''
+  });
+
+  const normalizeAdminStudent = (value = {}) => ({
+    ...value,
+    id: value.id ?? value.userId ?? value.username ?? '',
+    username: value.username ?? value.account ?? '',
+    name: value.name ?? value.displayName ?? value.username ?? '',
+    email: value.email ?? '',
+    studentEmail: value.studentEmail ?? value.student_email ?? '',
+    studentId: value.studentId ?? value.student_id ?? '',
+    college: value.college ?? value.department ?? '',
+    year: value.year ?? value.grade ?? '',
+    role: String(value.role ?? 'student').toLowerCase()
+  });
+
+  const normalizeAdminGrade = (value = {}) => ({
+    ...normalizeGrade(value),
+    studentId: value.studentId ?? value.student_id ?? value.userId ?? '',
+    credits: numberValue(value.credits ?? value.credit, 0),
+    status: String(value.status ?? 'inprogress').toLowerCase()
+  });
+
+  const normalizeAdminSchedule = (value = {}) => ({
+    ...normalizeSchedule(value),
+    studentId: value.studentId ?? value.student_id ?? value.userId ?? '',
+    teacher: value.teacher ?? value.instructor ?? '',
+    location: value.location ?? value.room ?? value.classroom ?? ''
   });
 
   const showToast = (message) => {
@@ -320,7 +364,11 @@
   };
 
   const waitForManagedContent = async () => {
-    try { await I18N.ready; I18N.apply(); } catch { /* static dictionary remains the fallback */ }
+    try {
+      // A stalled content service must never prevent page controls from binding.
+      await Promise.race([Promise.resolve(I18N.ready), new Promise((resolve) => window.setTimeout(resolve, 1800))]);
+      I18N.apply();
+    } catch { /* static dictionary remains the fallback */ }
   };
 
   const setActiveNav = (selector, section) => document.querySelectorAll(selector).forEach((link) => link.classList.toggle('is-active', link.dataset.portalNav === section || link.dataset.adminNav === section));
@@ -337,6 +385,13 @@
     try { return listFrom(await api(path), keys); }
     catch (error) {
       if (isAuthError(error)) redirectToLogin();
+      throw error;
+    }
+  };
+  const optionalResource = async (path, keys) => {
+    try { return await resource(path, keys); }
+    catch (error) {
+      if (error?.status === 404 || error?.status === 405) return [];
       throw error;
     }
   };
@@ -361,7 +416,7 @@
     document.querySelectorAll('[data-user-welcome]').forEach((node) => { node.textContent = I18N.t('portal.welcome', { name: state.user.name || state.user.username }); });
     const initials = String(state.user.name || state.user.username || 'CGU').trim().split(/\s+/).map((part) => part[0]).join('').slice(0, 3).toUpperCase();
     document.querySelectorAll('[data-user-initials]').forEach((node) => { node.textContent = initials || 'CGU'; });
-    Object.entries({ studentId: state.user.studentId, username: state.user.username, email: state.user.email, college: localeValue(state.user.college, state.user.college), year: state.user.year }).forEach(([key, value]) => document.querySelectorAll(`[data-profile="${key}"]`).forEach((node) => { node.textContent = value || '—'; }));
+    Object.entries({ studentId: state.user.studentId, username: state.user.username, email: state.user.email, studentEmail: state.user.studentEmail, college: localeValue(state.user.college, state.user.college), year: state.user.year }).forEach(([key, value]) => document.querySelectorAll(`[data-profile="${key}"]`).forEach((node) => { node.textContent = value || '—'; }));
   };
 
   const renderPortalMetrics = () => {
@@ -562,9 +617,56 @@
   const fillForm = (form, item, fields) => { fields.forEach((field) => { const input = form.elements[field]; if (input) input.value = item?.[field] ?? ''; }); };
   const showEditor = (editor, show) => { if (editor) editor.hidden = !show; if (show) editor?.querySelector('input:not([type="hidden"])')?.focus(); };
 
+  const adminStudent = (id) => state.adminStudents.find((item) => String(item.id) === String(id));
+  const adminCourse = (id) => state.adminCourses.find((item) => String(item.id) === String(id));
+  const adminStudentLabel = (item) => item ? `${item.studentId || item.username || '—'} · ${item.name || item.username || '—'}` : '—';
+  const adminCourseLabel = (item) => item ? `${item.code || item.id || '—'} · ${courseLabel(item)}` : '—';
+  const adminDayLabel = (day) => I18N.t(['portal.mon', 'portal.tue', 'portal.wed', 'portal.thu', 'portal.fri', 'portal.sat', 'portal.sun'][Math.max(1, Math.min(7, Number(day) || 1)) - 1]);
+
+  const renderAdminReferenceOptions = () => {
+    const studentOptions = state.adminStudents.map((item) => `<option value="${escapeHTML(item.id)}">${escapeHTML(adminStudentLabel(item))}</option>`).join('');
+    const courseOptions = state.adminCourses.map((item) => `<option value="${escapeHTML(item.id)}">${escapeHTML(adminCourseLabel(item))}</option>`).join('');
+    document.querySelectorAll('[data-admin-student-options]').forEach((select) => {
+      const current = select.value;
+      select.innerHTML = `<option value="">${escapeHTML(I18N.t('admin.selectStudent'))}</option>${studentOptions}`;
+      if (state.adminStudents.some((item) => String(item.id) === String(current))) select.value = current;
+    });
+    document.querySelectorAll('[data-admin-course-options]').forEach((select) => {
+      const current = select.value;
+      select.innerHTML = `<option value="">${escapeHTML(I18N.t('admin.selectCourse'))}</option>${courseOptions}`;
+      if (state.adminCourses.some((item) => String(item.id) === String(current))) select.value = current;
+    });
+  };
+
+  const renderAdminStudents = () => {
+    const list = document.querySelector('[data-admin-student-list]');
+    if (!list) return;
+    list.innerHTML = state.adminStudents.length ? state.adminStudents.map((item) => `<tr><td>${escapeHTML(item.studentId || '—')}</td><td><span class="course-name">${escapeHTML(item.name || '—')}</span></td><td>${escapeHTML(item.username || '—')}</td><td>${escapeHTML(item.studentEmail || item.email || '—')}</td><td>${escapeHTML(item.college || '—')}</td><td>${escapeHTML(item.year || '—')}</td><td><button class="table-action" type="button" data-edit-student="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.edit'))}</button></td></tr>`).join('') : `<tr><td colspan="7" class="empty-state">${escapeHTML(I18N.t('admin.noStudents'))}</td></tr>`;
+  };
+
+  const renderAdminAcademic = () => {
+    const gradeList = document.querySelector('[data-admin-grade-list]');
+    if (gradeList) gradeList.innerHTML = state.adminGrades.length ? state.adminGrades.map((item) => {
+      const student = adminStudent(item.studentId);
+      const course = adminCourse(item.courseId);
+      const statusKey = { inprogress: 'admin.gradeInProgress', graded: 'admin.gradeGraded', published: 'admin.gradePublished', withdrawn: 'admin.gradeWithdrawn' }[item.status] || 'admin.gradeInProgress';
+      return `<tr><td>${escapeHTML(student ? adminStudentLabel(student) : (item.studentId || '—'))}</td><td><span class="course-name">${escapeHTML(course ? adminCourseLabel(course) : (item.courseCode || item.courseNameZh || '—'))}</span></td><td>${escapeHTML(item.score ?? '—')}</td><td>${escapeHTML(item.point ?? '—')}</td><td><span class="status-pill${item.status === 'withdrawn' ? ' is-full' : item.status === 'inprogress' ? ' is-progress' : ''}">${escapeHTML(I18N.t(statusKey))}</span></td><td><button class="table-action" type="button" data-edit-grade="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-grade="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></td></tr>`;
+    }).join('') : `<tr><td colspan="6" class="empty-state">${escapeHTML(I18N.t('admin.noGrades'))}</td></tr>`;
+    const scheduleList = document.querySelector('[data-admin-schedule-list]');
+    if (scheduleList) scheduleList.innerHTML = state.adminSchedule.length ? state.adminSchedule.map((item) => {
+      const student = adminStudent(item.studentId);
+      const course = adminCourse(item.courseId);
+      return `<tr><td>${escapeHTML(student ? adminStudentLabel(student) : (item.studentId || '—'))}</td><td><span class="course-name">${escapeHTML(course ? adminCourseLabel(course) : (item.courseCode || item.courseNameZh || '—'))}</span></td><td>${escapeHTML(adminDayLabel(item.day))}</td><td>${escapeHTML(`${item.start || '—'}–${item.end || '—'}`)}</td><td>${escapeHTML(item.location || '—')}</td><td><button class="table-action" type="button" data-edit-schedule="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-schedule="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></td></tr>`;
+    }).join('') : `<tr><td colspan="6" class="empty-state">${escapeHTML(I18N.t('admin.noSchedule'))}</td></tr>`;
+  };
+
   const renderAdmin = () => {
     state.adminCourses = state.adminCourses.map(normalizeCourse);
     state.adminAnnouncements = state.adminAnnouncements.map(normalizeAnnouncement);
+    state.adminAdmissions = state.adminAdmissions.map(normalizeAdmission);
+    state.adminStudents = state.adminStudents.map(normalizeAdminStudent);
+    state.adminGrades = state.adminGrades.map(normalizeAdminGrade);
+    state.adminSchedule = state.adminSchedule.map(normalizeAdminSchedule).sort((a, b) => a.day - b.day || a.start.localeCompare(b.start));
     const stats = state.adminStats?.stats || state.adminStats || {};
     document.querySelectorAll('[data-admin-metric="courses"]').forEach((node) => { node.textContent = stats.courses ?? state.adminCourses.length; });
     document.querySelectorAll('[data-admin-metric="sections"]').forEach((node) => { node.textContent = stats.sections ?? state.adminCourses.filter((course) => !(course.capacity && course.enrolledCount >= course.capacity)).length; });
@@ -574,8 +676,26 @@
     if (courseList) courseList.innerHTML = state.adminCourses.length ? state.adminCourses.map((course) => `<tr><td>${escapeHTML(course.code)}</td><td><span class="course-name">${escapeHTML(courseLabel(course))}</span>${courseSecondaryLabel(course)}</td><td>${escapeHTML(course.teacher)}</td><td>${escapeHTML(course.credits)}</td><td>${escapeHTML(course.term)}</td><td>${escapeHTML(course.enrolledCount)}/${escapeHTML(course.capacity || '—')}</td><td><button class="table-action" type="button" data-edit-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></td></tr>`).join('') : `<tr><td colspan="7" class="empty-state">${escapeHTML(I18N.t('admin.noCourses'))}</td></tr>`;
     const announcementList = document.querySelector('[data-admin-announcement-list]');
     if (announcementList) announcementList.innerHTML = state.adminAnnouncements.length ? state.adminAnnouncements.map((item) => `<article class="admin-announcement-row"><div><span class="announcement-type">${escapeHTML(item.type)}</span><h3>${escapeHTML(announcementTitle(item))}</h3><p>${escapeHTML(announcementContent(item))}</p></div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.publishedAt, true))}</div><div class="admin-actions"><span class="status-pill${item.published ? '' : ' is-full'}">${escapeHTML(item.published ? I18N.t('admin.publish') : I18N.t('admin.unpublish'))}</span><button class="table-action" type="button" data-edit-announcement="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-announcement="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></div></article>`).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noAnnouncements'))}</p>`;
+    renderAdminAdmissions();
+    renderAdminStudents();
+    renderAdminReferenceOptions();
+    renderAdminAcademic();
     renderSiteContent();
     I18N.apply();
+  };
+
+  const renderAdminAdmissions = () => {
+    const list = document.querySelector('[data-admin-admission-list]');
+    if (!list) return;
+    list.innerHTML = state.adminAdmissions.length ? state.adminAdmissions.map((item) => `<article class="admin-admission-row"><div><span class="announcement-type">${escapeHTML(item.school || I18N.t('admin.admissionUndecided'))}</span><h3>${escapeHTML(item.name || '—')}</h3><p><a href="mailto:${escapeHTML(item.email)}">${escapeHTML(item.email)}</a></p></div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.createdAt, true))}</div><div class="admin-actions"><label class="visually-hidden" for="admission-status-${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.admissionStatus'))}</label><select id="admission-status-${escapeHTML(item.id)}" data-admission-status="${escapeHTML(item.id)}"><option value="pending"${item.status === 'pending' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionPending'))}</option><option value="reviewing"${item.status === 'reviewing' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionReviewing'))}</option><option value="contacted"${item.status === 'contacted' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionContacted'))}</option><option value="accepted"${item.status === 'accepted' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionAccepted'))}</option><option value="rejected"${item.status === 'rejected' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionRejected'))}</option></select></div></article>`).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noAdmissions'))}</p>`;
+  };
+
+  const renderAdminLoadError = () => {
+    const message = I18N.t('admin.loadError');
+    document.querySelectorAll('[data-admin-course-list]').forEach((list) => { list.innerHTML = `<tr><td colspan="7" class="empty-state">${escapeHTML(message)}</td></tr>`; });
+    document.querySelectorAll('[data-admin-announcement-list], [data-admin-admission-list]').forEach((list) => { list.innerHTML = `<p class="empty-state">${escapeHTML(message)}</p>`; });
+    document.querySelectorAll('[data-admin-student-list], [data-admin-grade-list], [data-admin-schedule-list]').forEach((list) => { list.innerHTML = `<tr><td colspan="7" class="empty-state">${escapeHTML(message)}</td></tr>`; });
+    document.querySelectorAll('[data-site-content-list]').forEach((list) => { list.innerHTML = `<tr><td colspan="4" class="empty-state">${escapeHTML(message)}</td></tr>`; });
   };
 
   const renderSiteContent = () => {
@@ -687,28 +807,210 @@
     });
   };
 
+  const handleAdminAdmissions = () => {
+    const list = document.querySelector('[data-admin-admission-list]');
+    if (!list) return;
+    list.addEventListener('change', async (event) => {
+      const select = event.target.closest('[data-admission-status]');
+      if (!select) return;
+      const item = state.adminAdmissions.find((value) => String(value.id) === String(select.dataset.admissionStatus));
+      if (!item) return;
+      const previous = item.status;
+      item.status = select.value;
+      select.disabled = true;
+      try {
+        const result = await adminRequest(`/admin/admissions/${encodeURIComponent(item.id)}`, 'PATCH', { status: item.status, notes: item.notes });
+        const updated = normalizeAdmission(result?.application || result || item);
+        state.adminAdmissions = state.adminAdmissions.map((value) => String(value.id) === String(item.id) ? updated : value);
+        renderAdminAdmissions();
+        showToast(I18N.t('admin.saved'));
+      } catch (error) {
+        item.status = previous;
+        renderAdminAdmissions();
+        if (isAuthError(error)) redirectToLogin(); else showToast(error.message || I18N.t('admin.error'));
+      }
+    });
+  };
+
+  const studentPayload = (form) => {
+    const values = Object.fromEntries(new FormData(form).entries());
+    const payload = {
+      id: values.id?.trim() || undefined,
+      username: values.username?.trim(),
+      name: values.name?.trim(),
+      email: values.email?.trim() || '',
+      studentId: values.studentId?.trim(),
+      college: values.college?.trim() || '',
+      year: values.year?.trim() || ''
+    };
+    if (values.password?.length) payload.password = values.password;
+    return payload;
+  };
+
+  const academicValue = (value) => String(value ?? '').trim() === '' ? null : String(value).trim();
+  const gradePayload = (form) => {
+    const values = Object.fromEntries(new FormData(form).entries());
+    return {
+      id: values.id?.trim() || undefined,
+      studentId: values.studentId,
+      courseId: values.courseId,
+      score: academicValue(values.score),
+      point: academicValue(values.point),
+      term: values.term?.trim() || '',
+      credits: numberValue(values.credits, 0),
+      status: values.status || 'inprogress'
+    };
+  };
+
+  const schedulePayload = (form) => {
+    const values = Object.fromEntries(new FormData(form).entries());
+    return {
+      id: values.id?.trim() || undefined,
+      studentId: values.studentId,
+      courseId: values.courseId,
+      day: numberValue(values.day, 1),
+      start: values.start,
+      end: values.end,
+      location: values.location?.trim() || '',
+      teacher: values.teacher?.trim() || ''
+    };
+  };
+
+  const handleAdminStudents = () => {
+    const form = document.querySelector('[data-student-form]');
+    const editor = document.querySelector('[data-student-editor]');
+    if (!form) return;
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!form.checkValidity()) { showToast(I18N.t('admin.required')); form.reportValidity(); return; }
+      const values = studentPayload(form); const id = form.elements.id.value;
+      if (!id && !values.password) { showToast(I18N.t('admin.studentPasswordRequired')); form.elements.password.focus(); return; }
+      try {
+        if (id) {
+          const result = await adminRequest(`/admin/students/${encodeURIComponent(id)}`, 'PATCH', values);
+          const updated = normalizeAdminStudent(result?.student || result || { ...values, id });
+          state.adminStudents = state.adminStudents.map((item) => String(item.id) === String(id) ? updated : item);
+        } else {
+          const result = await adminRequest('/admin/students', 'POST', values);
+          state.adminStudents.unshift(normalizeAdminStudent(result?.student || result || values));
+        }
+        form.reset(); form.elements.id.value = ''; showEditor(editor, false); renderAdmin(); showToast(I18N.t('admin.saved'));
+      } catch (error) { if (isAuthError(error)) redirectToLogin(); else showToast(error.message || I18N.t('admin.error')); }
+    });
+    document.querySelector('[data-new-student]')?.addEventListener('click', () => { form.reset(); form.elements.id.value = ''; form.elements.password.required = true; showEditor(editor, true); });
+    document.querySelector('[data-cancel-student]')?.addEventListener('click', () => { form.reset(); form.elements.id.value = ''; form.elements.password.required = false; showEditor(editor, false); });
+    document.querySelector('[data-admin-student-list]')?.addEventListener('click', (event) => {
+      const edit = event.target.closest('[data-edit-student]');
+      if (!edit) return;
+      const item = adminStudent(edit.dataset.editStudent);
+      if (!item) return;
+      fillForm(form, item, ['id', 'username', 'name', 'email', 'studentId', 'college', 'year']);
+      form.elements.password.value = '';
+      form.elements.password.required = false;
+      showEditor(editor, true);
+    });
+  };
+
+  const handleAdminGrades = () => {
+    const form = document.querySelector('[data-grade-form]');
+    const editor = document.querySelector('[data-grade-editor]');
+    const list = document.querySelector('[data-admin-grade-list]');
+    if (!form || !list) return;
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!form.checkValidity()) { showToast(I18N.t('admin.required')); form.reportValidity(); return; }
+      const values = gradePayload(form); const id = form.elements.id.value;
+      try {
+        if (id) {
+          const result = await adminRequest(`/admin/grades/${encodeURIComponent(id)}`, 'PATCH', values);
+          const updated = normalizeAdminGrade(result?.grade || result || { ...values, id });
+          state.adminGrades = state.adminGrades.map((item) => String(item.id) === String(id) ? updated : item);
+        } else {
+          const result = await adminRequest('/admin/grades', 'POST', values);
+          state.adminGrades.unshift(normalizeAdminGrade(result?.grade || result || values));
+        }
+        form.reset(); form.elements.id.value = ''; showEditor(editor, false); renderAdmin(); showToast(I18N.t('admin.saved'));
+      } catch (error) { if (isAuthError(error)) redirectToLogin(); else showToast(error.message || I18N.t('admin.error')); }
+    });
+    document.querySelector('[data-new-grade]')?.addEventListener('click', () => { form.reset(); form.elements.id.value = ''; renderAdminReferenceOptions(); showEditor(editor, true); });
+    document.querySelector('[data-cancel-grade]')?.addEventListener('click', () => { form.reset(); form.elements.id.value = ''; showEditor(editor, false); });
+    list.addEventListener('click', async (event) => {
+      const edit = event.target.closest('[data-edit-grade]'); const remove = event.target.closest('[data-delete-grade]');
+      if (edit) {
+        const item = state.adminGrades.find((value) => String(value.id) === String(edit.dataset.editGrade));
+        if (item) { fillForm(form, { ...item, score: item.score === '—' ? '' : item.score, point: item.point === '—' ? '' : item.point }, ['id', 'studentId', 'courseId', 'score', 'point', 'term', 'credits', 'status']); renderAdminReferenceOptions(); showEditor(editor, true); }
+      }
+      if (remove) {
+        const item = state.adminGrades.find((value) => String(value.id) === String(remove.dataset.deleteGrade));
+        if (!item || !window.confirm(I18N.t('admin.deleteConfirm'))) return;
+        try { await adminRequest(`/admin/grades/${encodeURIComponent(item.id)}`, 'DELETE'); state.adminGrades = state.adminGrades.filter((value) => String(value.id) !== String(item.id)); renderAdmin(); showToast(I18N.t('admin.deleted')); } catch (error) { if (isAuthError(error)) redirectToLogin(); else showToast(error.message || I18N.t('admin.error')); }
+      }
+    });
+  };
+
+  const handleAdminSchedule = () => {
+    const form = document.querySelector('[data-schedule-form]');
+    const editor = document.querySelector('[data-schedule-editor]');
+    const list = document.querySelector('[data-admin-schedule-list]');
+    if (!form || !list) return;
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!form.checkValidity()) { showToast(I18N.t('admin.required')); form.reportValidity(); return; }
+      const values = schedulePayload(form); const id = form.elements.id.value;
+      try {
+        if (id) {
+          const result = await adminRequest(`/admin/schedule/${encodeURIComponent(id)}`, 'PATCH', values);
+          const updated = normalizeAdminSchedule(result?.schedule || result || { ...values, id });
+          state.adminSchedule = state.adminSchedule.map((item) => String(item.id) === String(id) ? updated : item);
+        } else {
+          const result = await adminRequest('/admin/schedule', 'POST', values);
+          state.adminSchedule.unshift(normalizeAdminSchedule(result?.schedule || result || values));
+        }
+        form.reset(); form.elements.id.value = ''; showEditor(editor, false); renderAdmin(); showToast(I18N.t('admin.saved'));
+      } catch (error) { if (isAuthError(error)) redirectToLogin(); else showToast(error.message || I18N.t('admin.error')); }
+    });
+    document.querySelector('[data-new-schedule]')?.addEventListener('click', () => { form.reset(); form.elements.id.value = ''; renderAdminReferenceOptions(); showEditor(editor, true); });
+    document.querySelector('[data-cancel-schedule]')?.addEventListener('click', () => { form.reset(); form.elements.id.value = ''; showEditor(editor, false); });
+    list.addEventListener('click', async (event) => {
+      const edit = event.target.closest('[data-edit-schedule]'); const remove = event.target.closest('[data-delete-schedule]');
+      if (edit) {
+        const item = state.adminSchedule.find((value) => String(value.id) === String(edit.dataset.editSchedule));
+        if (item) { fillForm(form, item, ['id', 'studentId', 'courseId', 'day', 'start', 'end', 'location', 'teacher']); renderAdminReferenceOptions(); showEditor(editor, true); }
+      }
+      if (remove) {
+        const item = state.adminSchedule.find((value) => String(value.id) === String(remove.dataset.deleteSchedule));
+        if (!item || !window.confirm(I18N.t('admin.deleteConfirm'))) return;
+        try { await adminRequest(`/admin/schedule/${encodeURIComponent(item.id)}`, 'DELETE'); state.adminSchedule = state.adminSchedule.filter((value) => String(value.id) !== String(item.id)); renderAdmin(); showToast(I18N.t('admin.deleted')); } catch (error) { if (isAuthError(error)) redirectToLogin(); else showToast(error.message || I18N.t('admin.error')); }
+      }
+    });
+  };
+
   const loadAdminData = async () => {
     try {
-      const [courses, announcements, stats] = await Promise.all([
+      const [courses, announcements, admissions, students, grades, schedule, stats] = await Promise.all([
         resource('/admin/courses', ['courses']),
         resource('/admin/announcements', ['announcements', 'items']),
+        optionalResource('/admin/admissions', ['applications', 'admissions', 'items']),
+        optionalResource('/admin/students', ['students', 'items']),
+        optionalResource('/admin/grades', ['grades', 'items']),
+        optionalResource('/admin/schedule', ['schedule', 'entries', 'items']),
         api('/admin/stats')
       ]);
       const content = await resource('/admin/site-content', ['content', 'items']);
       const managed = new Map((I18N.catalog?.() || []).map((item) => [item.key, normalizeSiteContent(item)]));
-      content.map(normalizeSiteContent).forEach((item) => {
+      (Array.isArray(content) ? content : []).map(normalizeSiteContent).forEach((item) => {
         const existing = managed.get(item.key) || {};
         managed.set(item.key, { ...existing, ...item, zh: item.zh || existing.zh || '', en: item.en || existing.en || '' });
       });
-      state.adminCourses = courses.map(normalizeCourse); state.adminAnnouncements = announcements.map(normalizeAnnouncement); state.adminSiteContent = [...managed.values()].filter((item) => item.key).sort((a, b) => a.key.localeCompare(b.key)); state.adminStats = stats || {}; renderAdmin();
-    } catch (error) { if (!isAuthError(error)) showPageAlert(I18N.t('admin.error')); }
+      state.adminCourses = (Array.isArray(courses) ? courses : []).map(normalizeCourse); state.adminAnnouncements = (Array.isArray(announcements) ? announcements : []).map(normalizeAnnouncement); state.adminAdmissions = (Array.isArray(admissions) ? admissions : []).map(normalizeAdmission); state.adminStudents = (Array.isArray(students) ? students : []).map(normalizeAdminStudent); state.adminGrades = (Array.isArray(grades) ? grades : []).map(normalizeAdminGrade); state.adminSchedule = (Array.isArray(schedule) ? schedule : []).map(normalizeAdminSchedule); state.adminSiteContent = [...managed.values()].filter((item) => item.key).sort((a, b) => a.key.localeCompare(b.key)); state.adminStats = stats || {}; renderAdmin();
+    } catch (error) { if (!isAuthError(error)) { showPageAlert(I18N.t('admin.error')); renderAdminLoadError(); } }
   };
 
   const initAdmin = async () => {
     setupHashNav('admin');
-    await waitForManagedContent();
     if (!await ensureSession('admin')) return;
-    handleAdminCourseForm(); handleAdminAnnouncementForm(); handleAdminSiteContent();
+    handleAdminCourseForm(); handleAdminAnnouncementForm(); handleAdminSiteContent(); handleAdminAdmissions(); handleAdminStudents(); handleAdminGrades(); handleAdminSchedule();
+    await waitForManagedContent();
     await loadAdminData();
     window.addEventListener('cgu:localechange', renderAdmin);
   };

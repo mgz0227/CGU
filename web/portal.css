@@ -192,11 +192,23 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
 .form-actions { display: flex; gap: 10px; margin-top: 3px; }
 .admin-form > label { margin-top: 16px; }
 .admin-table { min-width: 850px; }
+.student-table { min-width: 980px; }
+.admin-record-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.admin-record-panel { min-width: 0; padding: 22px; border: 1px solid var(--portal-line); background: rgba(255, 253, 248, .48); }
+.admin-record-panel .section-heading-inline { align-items: center; margin-bottom: 20px; }
+.admin-record-panel .section-heading-inline h3 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 25px; font-weight: 400; }
+.admin-record-panel .portal-button { min-height: 36px; padding: 0 12px; font-size: 10px; }
+.admin-record-panel .admin-editor { margin: 0 0 18px; padding: 18px; }
+.admin-record-panel .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.admin-record-panel .admin-table { min-width: 690px; }
 .admin-announcement-list { border-top: 1px solid var(--portal-line); }
 .admin-announcement-row { display: grid; grid-template-columns: minmax(0, 1fr) 160px 170px; align-items: center; gap: 20px; padding: 18px 3px; border-bottom: 1px solid var(--portal-line); }
+.admin-admission-row { display: grid; grid-template-columns: minmax(0, 1fr) 160px 190px; align-items: center; gap: 20px; padding: 18px 3px; border-bottom: 1px solid var(--portal-line); }
 .admin-announcement-row > * { min-width: 0; }
+.admin-admission-row > * { min-width: 0; }
 .admin-announcement-row h3 { margin: 0 0 3px; font-family: Georgia, serif; font-size: 17px; font-weight: 400; }
 .admin-announcement-row p { margin: 0; overflow: hidden; color: var(--portal-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-admission-row p { margin: 0; overflow: hidden; color: var(--portal-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .admin-announcement-meta { color: var(--portal-muted); font-size: 10px; }
 .admin-actions { display: flex; justify-content: flex-end; gap: 14px; }
 
@@ -263,6 +275,10 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
   .admin-editor { padding: 20px 16px; }
   .content-language-grid { grid-template-columns: 1fr; gap: 15px; }
   .admin-announcement-row { grid-template-columns: 1fr; gap: 8px; }
+  .admin-admission-row { grid-template-columns: 1fr; gap: 8px; }
+  .admin-record-grid { grid-template-columns: 1fr; }
+  .admin-record-panel { padding: 16px; }
+  .admin-record-panel .section-heading-inline { align-items: flex-start; flex-direction: row; }
   .admin-actions { justify-content: flex-start; }
 }
 
@@ -274,6 +290,7 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
   .login-orbit { right: -2px; bottom: -8px; width: 118px; height: 118px; }
   .login-orbit::before, .login-orbit::after { width: 154px; height: 53px; }
   .form-grid { grid-template-columns: 1fr; gap: 15px; }
+  .admin-record-panel .form-grid { grid-template-columns: 1fr; }
   .section-heading-inline { align-items: flex-start; flex-direction: column; gap: 8px; }
   .section-count { padding-bottom: 0; }
   .profile-fields { grid-template-columns: 1fr; }

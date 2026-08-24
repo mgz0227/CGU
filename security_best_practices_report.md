@@ -145,6 +145,19 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
 - False-positive note: database credentials must never be committed or placed
   in URLs/logs.
 
+### GO-ADMISSIONS-001: public application abuse (Medium, mitigated)
+
+- Location: `POST /api/admissions` and the `cgu_admissions` persistence path.
+- Evidence: request bodies use the existing one-megabyte JSON limit and same-site
+  request header/origin checks; names, schools, notes, and email addresses are
+  length-limited and validated with `net/mail`; each client is capped at twenty
+  submissions per hour with a bounded in-memory limiter.
+- Impact: reduces spam, oversized payloads, header injection, and malformed
+  contact data reaching the admissions queue.
+- Residual mitigation: use a proxy/WAF challenge and a shared rate-limit store
+  when running multiple replicas; add operator notifications and retention
+  limits before treating the queue as a regulated admissions record.
+
 ## Deployment requirements
 
 1. Serve behind HTTPS and set `CGU_COOKIE_SECURE=true` (or the equivalent
