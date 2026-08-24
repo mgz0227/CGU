@@ -1,0 +1,465 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+)
+
+const schemaSQL = `
+CREATE TABLE IF NOT EXISTS cgu_users (
+  id VARCHAR(64) PRIMARY KEY,
+  username VARCHAR(128) NOT NULL UNIQUE,
+  name_text VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  role_name VARCHAR(32) NOT NULL,
+  password_hash TEXT NOT NULL,
+  student_id VARCHAR(128) NOT NULL DEFAULT '',
+  college VARCHAR(255) NOT NULL DEFAULT '',
+  year_text VARCHAR(32) NOT NULL DEFAULT '',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS cgu_courses (
+  id VARCHAR(64) PRIMARY KEY,
+  code VARCHAR(64) NOT NULL UNIQUE,
+  name_zh VARCHAR(255) NOT NULL,
+  name_en VARCHAR(255) NOT NULL,
+  department VARCHAR(255) NOT NULL,
+  teacher VARCHAR(255) NOT NULL,
+  credits DECIMAL(8,2) NOT NULL DEFAULT 0,
+  description TEXT NOT NULL,
+  capacity INT NOT NULL DEFAULT 1,
+  course_type VARCHAR(32) NOT NULL DEFAULT 'elective',
+  term_name VARCHAR(64) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS cgu_enrollments (
+  id VARCHAR(64) PRIMARY KEY,
+  student_id VARCHAR(64) NOT NULL,
+  course_id VARCHAR(64) NOT NULL,
+  term_name VARCHAR(64) NOT NULL,
+  status_name VARCHAR(32) NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_enrollment_student (student_id),
+  INDEX idx_enrollment_course (course_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS cgu_grades (
+  id VARCHAR(64) PRIMARY KEY,
+  student_id VARCHAR(64) NOT NULL,
+  course_id VARCHAR(64) NOT NULL,
+  course_code VARCHAR(64) NOT NULL,
+  course_name_zh VARCHAR(255) NOT NULL,
+  course_name_en VARCHAR(255) NOT NULL,
+  score_text VARCHAR(32) NOT NULL,
+  point_text VARCHAR(32) NOT NULL,
+  term_name VARCHAR(64) NOT NULL,
+  status_name VARCHAR(32) NOT NULL,
+  credits INT NOT NULL DEFAULT 0,
+  INDEX idx_grade_student (student_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS cgu_schedule (
+  id VARCHAR(64) PRIMARY KEY,
+  student_id VARCHAR(64) NOT NULL,
+  course_id VARCHAR(64) NOT NULL,
+  course_code VARCHAR(64) NOT NULL,
+  course_name_zh VARCHAR(255) NOT NULL,
+  course_name_en VARCHAR(255) NOT NULL,
+  day_number INT NOT NULL,
+  start_time VARCHAR(16) NOT NULL,
+  end_time VARCHAR(16) NOT NULL,
+  location_name VARCHAR(255) NOT NULL,
+  teacher VARCHAR(255) NOT NULL,
+  INDEX idx_schedule_student (student_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS cgu_announcements (
+  id VARCHAR(64) PRIMARY KEY,
+  title_zh VARCHAR(255) NOT NULL,
+  title_en VARCHAR(255) NOT NULL,
+  content_zh TEXT NOT NULL,
+  content_en TEXT NOT NULL,
+  type_name VARCHAR(64) NOT NULL,
+  audience_name VARCHAR(64) NOT NULL,
+  course_id VARCHAR(64) NOT NULL DEFAULT '',
+  published_at VARCHAR(64) NOT NULL,
+  published_flag TINYINT(1) NOT NULL DEFAULT 1,
+  author_name VARCHAR(128) NOT NULL DEFAULT 'admin',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+`
+
+func openMySQL(cfg AppConfig) (*sql.DB, error) {
+	db, err := sql.Open(cfg.Database.Driver, cfg.MySQLDSN())
+	if err != nil {
+		return nil, err
+	}
+	maxOpen := cfg.Database.MaxOpenConns
+	if maxOpen < 1 {
+		maxOpen = 10
+	}
+	maxIdle := cfg.Database.MaxIdleConns
+	if maxIdle < 0 {
+		maxIdle = 0
+	}
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateDatabase(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func migrateDatabase(ctx context.Context, db *sql.DB) error {
+	for _, statement := range strings.Split(schemaSQL, ";") {
+		statement = strings.TrimSpace(statement)
+		if statement == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("database migration: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) attachDatabase(db *sql.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.db = db
+	if err := s.ensureDatabaseSeedLocked(ctx); err != nil {
+		s.db = nil
+		return err
+	}
+	if err := s.loadDatabaseLocked(ctx); err != nil {
+		s.db = nil
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureDatabaseSeedLocked(ctx context.Context) error {
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_users").Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		for _, user := range s.users {
+			if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, user.ID, user.Username, user.Name, user.Email, user.Role, user.PasswordHash, user.StudentID, user.College, user.Year); err != nil {
+				return err
+			}
+		}
+	}
+	if err := s.seedCoursesLocked(ctx); err != nil {
+		return err
+	}
+	if err := s.seedEnrollmentsLocked(ctx); err != nil {
+		return err
+	}
+	if err := s.seedGradesLocked(ctx); err != nil {
+		return err
+	}
+	if err := s.seedScheduleLocked(ctx); err != nil {
+		return err
+	}
+	return s.seedAnnouncementsLocked(ctx)
+}
+
+func (s *Store) seedCoursesLocked(ctx context.Context) error {
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_courses").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	for _, item := range s.courses {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_courses (id, code, name_zh, name_en, department, teacher, credits, description, capacity, course_type, term_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.Code, item.NameZh, item.NameEn, item.Department, item.Teacher, item.Credits, item.Description, item.Capacity, item.Type, item.Term); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) seedEnrollmentsLocked(ctx context.Context) error {
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_enrollments").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	for _, item := range s.enrollments {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_enrollments (id, student_id, course_id, term_name, status_name) VALUES (?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.Term, item.Status); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) seedGradesLocked(ctx context.Context) error {
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_grades").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	for _, item := range s.grades {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_grades (id, student_id, course_id, course_code, course_name_zh, course_name_en, score_text, point_text, term_name, status_name, credits) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.CourseCode, item.CourseNameZh, item.CourseNameEn, fmt.Sprint(item.Score), fmt.Sprint(item.Point), item.Term, item.Status, item.Credits); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) seedScheduleLocked(ctx context.Context) error {
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_schedule").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	for _, item := range s.schedule {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_schedule (id, student_id, course_id, course_code, course_name_zh, course_name_en, day_number, start_time, end_time, location_name, teacher) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.CourseCode, item.CourseNameZh, item.CourseNameEn, item.Day, item.Start, item.End, item.Location, item.Teacher); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) seedAnnouncementsLocked(ctx context.Context) error {
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_announcements").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	for _, item := range s.announcements {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_announcements (id, title_zh, title_en, content_zh, content_en, type_name, audience_name, course_id, published_at, published_flag, author_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.TitleZh, item.TitleEn, item.ContentZh, item.ContentEn, item.Type, item.Audience, item.CourseID, item.PublishedAt, item.Published, item.Author); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) loadDatabaseLocked(ctx context.Context) error {
+	users, err := loadUsers(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	courses, err := loadCourses(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	enrollments, err := loadEnrollments(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	grades, err := loadGrades(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	schedule, err := loadSchedule(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	announcements, err := loadAnnouncements(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	for id, user := range users {
+		s.users[id] = user
+	}
+	if len(courses) > 0 {
+		s.courses = courses
+	}
+	s.enrollments, s.grades, s.schedule, s.announcements = enrollments, grades, schedule, announcements
+	return nil
+}
+
+func loadUsers(ctx context.Context, db *sql.DB) (map[string]*User, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id, username, name_text, email, role_name, password_hash, student_id, college, year_text FROM cgu_users")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]*User)
+	for rows.Next() {
+		item := &User{}
+		if err := rows.Scan(&item.ID, &item.Username, &item.Name, &item.Email, &item.Role, &item.PasswordHash, &item.StudentID, &item.College, &item.Year); err != nil {
+			return nil, err
+		}
+		result[item.ID] = item
+	}
+	return result, rows.Err()
+}
+
+func loadCourses(ctx context.Context, db *sql.DB) ([]*Course, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id, code, name_zh, name_en, department, teacher, credits, description, capacity, course_type, term_name FROM cgu_courses ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]*Course, 0)
+	for rows.Next() {
+		item := &Course{}
+		if err := rows.Scan(&item.ID, &item.Code, &item.NameZh, &item.NameEn, &item.Department, &item.Teacher, &item.Credits, &item.Description, &item.Capacity, &item.Type, &item.Term); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func loadEnrollments(ctx context.Context, db *sql.DB) ([]*Enrollment, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id, student_id, course_id, term_name, status_name FROM cgu_enrollments ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]*Enrollment, 0)
+	for rows.Next() {
+		item := &Enrollment{}
+		if err := rows.Scan(&item.ID, &item.StudentID, &item.CourseID, &item.Term, &item.Status); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func loadGrades(ctx context.Context, db *sql.DB) ([]*Grade, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id, student_id, course_id, course_code, course_name_zh, course_name_en, score_text, point_text, term_name, status_name, credits FROM cgu_grades ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]*Grade, 0)
+	for rows.Next() {
+		item := &Grade{}
+		var score, point string
+		if err := rows.Scan(&item.ID, &item.StudentID, &item.CourseID, &item.CourseCode, &item.CourseNameZh, &item.CourseNameEn, &score, &point, &item.Term, &item.Status, &item.Credits); err != nil {
+			return nil, err
+		}
+		item.Score, item.Point = score, point
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func loadSchedule(ctx context.Context, db *sql.DB) ([]*ScheduleEntry, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id, student_id, course_id, course_code, course_name_zh, course_name_en, day_number, start_time, end_time, location_name, teacher FROM cgu_schedule ORDER BY day_number, start_time")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]*ScheduleEntry, 0)
+	for rows.Next() {
+		item := &ScheduleEntry{}
+		if err := rows.Scan(&item.ID, &item.StudentID, &item.CourseID, &item.CourseCode, &item.CourseNameZh, &item.CourseNameEn, &item.Day, &item.Start, &item.End, &item.Location, &item.Teacher); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func loadAnnouncements(ctx context.Context, db *sql.DB) ([]*Announcement, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id, title_zh, title_en, content_zh, content_en, type_name, audience_name, course_id, published_at, published_flag, author_name FROM cgu_announcements ORDER BY published_at DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]*Announcement, 0)
+	for rows.Next() {
+		item := &Announcement{}
+		if err := rows.Scan(&item.ID, &item.TitleZh, &item.TitleEn, &item.ContentZh, &item.ContentEn, &item.Type, &item.Audience, &item.CourseID, &item.PublishedAt, &item.Published, &item.Author); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) persistEnrollmentLocked(item *Enrollment) {
+	if s.db == nil || item == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_enrollments (id, student_id, course_id, term_name, status_name) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status_name=VALUES(status_name), term_name=VALUES(term_name)`, item.ID, item.StudentID, item.CourseID, item.Term, item.Status)
+	if err != nil {
+		log.Printf("CGU database write warning (enrollment): %v", err)
+	}
+}
+
+func (s *Store) persistCourseLocked(item *Course) {
+	if s.db == nil || item == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_courses (id, code, name_zh, name_en, department, teacher, credits, description, capacity, course_type, term_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE code=VALUES(code), name_zh=VALUES(name_zh), name_en=VALUES(name_en), department=VALUES(department), teacher=VALUES(teacher), credits=VALUES(credits), description=VALUES(description), capacity=VALUES(capacity), course_type=VALUES(course_type), term_name=VALUES(term_name)`, item.ID, item.Code, item.NameZh, item.NameEn, item.Department, item.Teacher, item.Credits, item.Description, item.Capacity, item.Type, item.Term)
+	if err != nil {
+		log.Printf("CGU database write warning (course): %v", err)
+	}
+}
+
+func (s *Store) persistAnnouncementLocked(item *Announcement) {
+	if s.db == nil || item == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_announcements (id, title_zh, title_en, content_zh, content_en, type_name, audience_name, course_id, published_at, published_flag, author_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE title_zh=VALUES(title_zh), title_en=VALUES(title_en), content_zh=VALUES(content_zh), content_en=VALUES(content_en), type_name=VALUES(type_name), audience_name=VALUES(audience_name), course_id=VALUES(course_id), published_at=VALUES(published_at), published_flag=VALUES(published_flag), author_name=VALUES(author_name)`, item.ID, item.TitleZh, item.TitleEn, item.ContentZh, item.ContentEn, item.Type, item.Audience, item.CourseID, item.PublishedAt, item.Published, item.Author)
+	if err != nil {
+		log.Printf("CGU database write warning (announcement): %v", err)
+	}
+}
+
+func (s *Store) deleteCoursePersistedLocked(id string) {
+	if s.db == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM cgu_courses WHERE id = ?`, id); err != nil {
+		log.Printf("CGU database write warning (course delete): %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM cgu_enrollments WHERE course_id = ?`, id); err != nil {
+		log.Printf("CGU database write warning (enrollment cleanup): %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM cgu_grades WHERE course_id = ?`, id); err != nil {
+		log.Printf("CGU database write warning (grade cleanup): %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM cgu_schedule WHERE course_id = ?`, id); err != nil {
+		log.Printf("CGU database write warning (schedule cleanup): %v", err)
+	}
+}
+
+func (s *Store) deleteAnnouncementPersistedLocked(id string) {
+	if s.db == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM cgu_announcements WHERE id = ?`, id); err != nil {
+		log.Printf("CGU database write warning (announcement delete): %v", err)
+	}
+}

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="China Genshin University student portal">
+    <title data-i18n="portal.pageTitle">CGU · 学生教务</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="portal.css">
+    <script src="i18n.js" defer></script>
+    <script src="portal.js" defer></script>
+  </head>
+  <body class="portal-shell app-page" data-page="portal">
+    <a class="skip-link" href="#portal-main" data-i18n="common.skipMain">跳到主内容</a>
+    <header class="portal-header portal-header-light">
+      <div class="portal-container portal-header-inner">
+        <a class="portal-brand" href="index.html" aria-label="China Genshin University" data-i18n-attr="aria-label:brand.full">
+          <span class="portal-brand-mark" aria-hidden="true"><span></span></span>
+          <span class="portal-brand-copy"><strong>CGU</strong><small data-i18n="brand.name">原神大学</small></span>
+        </a>
+        <nav class="portal-nav" aria-label="学生门户导航" data-i18n-attr="aria-label:common.studentNav">
+          <a class="is-active" href="#overview" data-portal-nav="overview" data-i18n="portal.overview">概览</a>
+          <a href="#courses" data-portal-nav="courses" data-i18n="portal.courses">课程中心</a>
+          <a href="#grades" data-portal-nav="grades" data-i18n="portal.grades">成绩单</a>
+          <a href="#schedule" data-portal-nav="schedule" data-i18n="portal.schedule">课表</a>
+          <a href="#announcements" data-portal-nav="announcements" data-i18n="portal.announcements">公告</a>
+        </nav>
+        <div class="portal-header-actions">
+          <button class="portal-language" type="button" data-locale-toggle>English</button>
+          <span class="portal-user-chip" data-user-name>—</span>
+          <button class="portal-icon-button mobile-nav-toggle" type="button" aria-expanded="false" aria-controls="portal-mobile-nav" data-mobile-nav-toggle aria-label="打开菜单" data-i18n-attr="aria-label:nav.menu">☰</button>
+          <button class="portal-logout" type="button" data-logout data-i18n="nav.logout">退出登录</button>
+        </div>
+      </div>
+      <nav class="portal-mobile-nav" id="portal-mobile-nav" aria-label="移动端导航" data-i18n-attr="aria-label:common.mobileNav" aria-hidden="true">
+        <a href="#overview" data-portal-nav="overview" data-i18n="portal.overview">概览</a>
+        <a href="#courses" data-portal-nav="courses" data-i18n="portal.courses">课程中心</a>
+        <a href="#grades" data-portal-nav="grades" data-i18n="portal.grades">成绩单</a>
+        <a href="#schedule" data-portal-nav="schedule" data-i18n="portal.schedule">课表</a>
+        <a href="#announcements" data-portal-nav="announcements" data-i18n="portal.announcements">公告</a>
+      </nav>
+    </header>
+
+    <main id="portal-main" class="portal-main portal-container">
+      <div class="portal-page-heading">
+        <div>
+          <p class="portal-kicker" data-i18n="portal.kicker">STUDENT PORTAL</p>
+          <h1 data-i18n="portal.title">我的教务空间</h1>
+          <p class="portal-welcome" data-user-welcome>欢迎回来</p>
+        </div>
+        <button class="portal-button portal-button-outline" type="button" data-refresh><span data-i18n="portal.refresh">刷新数据</span><span aria-hidden="true">↻</span></button>
+      </div>
+
+      <div class="portal-alert" data-page-alert role="alert" aria-live="polite"></div>
+
+      <section class="portal-section" id="overview" data-portal-section="overview" aria-labelledby="overview-heading">
+        <h2 class="visually-hidden" id="overview-heading" data-i18n="portal.overview">概览</h2>
+        <div class="metric-grid">
+          <article class="metric-card"><span class="metric-label" data-i18n="portal.credits">已修学分</span><strong data-metric="credits">—</strong><small data-metric-note="credits">—</small></article>
+          <article class="metric-card"><span class="metric-label" data-i18n="portal.gpa">当前绩点</span><strong data-metric="gpa">—</strong><small data-metric-note="gpa">—</small></article>
+          <article class="metric-card"><span class="metric-label" data-i18n="portal.enrolled">在修课程</span><strong data-metric="enrolled">—</strong><small data-metric-note="enrolled">—</small></article>
+          <article class="metric-card metric-card-accent"><span class="metric-label" data-i18n="portal.nextClass">下一节课</span><strong class="metric-course" data-metric="nextClass">—</strong><small data-metric-note="nextClass">—</small></article>
+        </div>
+        <div class="overview-grid">
+          <article class="panel-card overview-card"><div class="panel-card-heading"><h2 data-i18n="portal.announcements">公告</h2><a href="#announcements" class="panel-link" data-i18n="portal.readMore">查看详情</a></div><div class="mini-announcements" data-mini-announcements><p class="empty-state" data-i18n="common.loading">加载中…</p></div></article>
+          <article class="panel-card overview-card"><div class="panel-card-heading"><h2 data-i18n="portal.schedule">课表</h2><a href="#schedule" class="panel-link" data-i18n="portal.readMore">查看详情</a></div><div class="mini-schedule" data-mini-schedule><p class="empty-state" data-i18n="common.loading">加载中…</p></div></article>
+        </div>
+      </section>
+
+      <section class="portal-section" id="courses" data-portal-section="courses" aria-labelledby="courses-heading">
+        <div class="section-heading-inline"><div><p class="portal-kicker">ACADEMICS</p><h2 id="courses-heading" data-i18n="portal.courses">课程中心</h2></div><span class="section-count" data-course-count>—</span></div>
+        <div class="filter-bar"><label class="search-field"><span aria-hidden="true">⌕</span><input type="search" data-course-search data-i18n-attr="placeholder:portal.courseSearch"></label><select data-course-term aria-label="学期" data-i18n-attr="aria-label:common.termFilter"><option value="all" data-i18n="portal.allTerms">全部学期</option></select><select data-course-type aria-label="课程类型" data-i18n-attr="aria-label:common.courseTypeFilter"><option value="all" data-i18n="portal.allTypes">全部类型</option><option value="required" data-i18n="portal.required">必修</option><option value="elective" data-i18n="portal.elective">选修</option></select></div>
+        <div class="table-wrap"><table class="data-table course-table"><thead><tr><th data-i18n="portal.courseCode">课程代码</th><th data-i18n="portal.courseName">课程名称</th><th data-i18n="portal.teacher">授课教师</th><th data-i18n="portal.creditsLabel">学分</th><th data-i18n="portal.term">学期</th><th data-i18n="portal.status">状态</th><th></th></tr></thead><tbody data-course-list><tr><td colspan="7" class="empty-state" data-i18n="common.loading">加载中…</td></tr></tbody></table></div>
+      </section>
+
+      <section class="portal-section" id="grades" data-portal-section="grades" aria-labelledby="grades-heading">
+        <div class="section-heading-inline"><div><p class="portal-kicker">ACADEMICS</p><h2 id="grades-heading" data-i18n="portal.grades">成绩单</h2></div><span class="section-count" data-grade-summary>—</span></div>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th data-i18n="portal.gradeCourse">课程</th><th data-i18n="portal.gradeScore">成绩</th><th data-i18n="portal.gradePoint">绩点</th><th data-i18n="portal.gradeTerm">学期</th><th data-i18n="portal.gradeStatus">状态</th></tr></thead><tbody data-grade-list><tr><td colspan="5" class="empty-state" data-i18n="common.loading">加载中…</td></tr></tbody></table></div>
+      </section>
+
+      <section class="portal-section" id="schedule" data-portal-section="schedule" aria-labelledby="schedule-heading">
+        <div class="section-heading-inline"><div><p class="portal-kicker">ACADEMICS</p><h2 id="schedule-heading" data-i18n="portal.schedule">课表</h2></div><span class="section-count" data-term-label>—</span></div>
+        <div class="schedule-wrap" data-schedule-grid><p class="empty-state" data-i18n="common.loading">加载中…</p></div>
+      </section>
+
+      <section class="portal-section" id="announcements" data-portal-section="announcements" aria-labelledby="announcements-heading">
+        <div class="section-heading-inline"><div><p class="portal-kicker">CAMPUS LIFE</p><h2 id="announcements-heading" data-i18n="portal.announcements">公告</h2></div></div>
+        <div class="announcement-list" data-announcement-list><p class="empty-state" data-i18n="common.loading">加载中…</p></div>
+      </section>
+
+      <section class="portal-section" id="profile" data-portal-section="profile" aria-labelledby="profile-heading">
+        <div class="section-heading-inline"><div><p class="portal-kicker">ACCOUNT</p><h2 id="profile-heading" data-i18n="portal.profile">个人资料</h2></div></div>
+        <div class="profile-card"><div class="profile-avatar" data-user-initials>CGU</div><div class="profile-fields"><div><span data-i18n="portal.studentId">学号</span><strong data-profile="studentId">—</strong></div><div><span data-i18n="login.account">账号</span><strong data-profile="username">—</strong></div><div><span data-i18n="portal.email">邮箱</span><strong data-profile="email">—</strong></div><div><span data-i18n="portal.college">学院</span><strong data-profile="college">—</strong></div><div><span data-i18n="portal.year">年级</span><strong data-profile="year">—</strong></div></div></div>
+      </section>
+    </main>
+
+    <dialog class="portal-dialog" data-announcement-dialog><div class="dialog-content"><button class="dialog-close" type="button" data-close-dialog aria-label="关闭" data-i18n-attr="aria-label:common.close">×</button><p class="portal-kicker" data-dialog-type>NOTICE</p><h2 data-dialog-title>—</h2><p class="dialog-date" data-dialog-date>—</p><div class="dialog-body" data-dialog-body></div></div></dialog>
+    <div class="portal-toast" data-toast role="status" aria-live="polite"></div>
+  </body>
+</html>

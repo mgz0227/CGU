@@ -1,0 +1,13 @@
+bin/
+obj/
+__pycache__/
+App_Data/
+*.user
+.learnings/
+.env
+.env.*
+!.env.example
+config.local.json
+config.json
+dist/
+*.log

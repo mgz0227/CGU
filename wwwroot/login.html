@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="China Genshin University campus access">
+    <title data-i18n="login.pageTitle">CGU · 登录</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="portal.css">
+    <script src="i18n.js" defer></script>
+    <script src="portal.js" defer></script>
+  </head>
+  <body class="portal-shell login-page" data-page="login">
+    <a class="skip-link" href="#login-main" data-i18n="common.skipLogin">跳到登录表单</a>
+    <header class="portal-header portal-header-dark">
+      <div class="portal-container portal-header-inner">
+        <a class="portal-brand" href="index.html" aria-label="China Genshin University" data-i18n-attr="aria-label:brand.full">
+          <span class="portal-brand-mark" aria-hidden="true"><span></span></span>
+          <span class="portal-brand-copy"><strong>CGU</strong><small data-i18n="brand.name">原神大学</small></span>
+        </a>
+        <div class="portal-header-actions">
+          <button class="portal-language" type="button" data-locale-toggle>English</button>
+          <a class="portal-home-link" href="index.html" data-i18n="login.back">回到大学首页</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="login-main" class="login-layout portal-container">
+      <section class="login-intro" aria-labelledby="login-title">
+        <p class="portal-kicker" data-i18n="login.kicker">CHINA GENSHIN UNIVERSITY · CAMPUS ACCESS</p>
+        <h1 id="login-title" data-i18n="login.title">登录 CGU 门户</h1>
+        <p class="login-subtitle" data-i18n="login.subtitle">进入课程、成绩与校园服务。</p>
+        <div class="login-orbit" aria-hidden="true"><span>CGU</span><i></i><b></b></div>
+        <p class="login-english">China Genshin University</p>
+      </section>
+
+      <section class="login-panel" aria-label="登录" data-i18n-attr="aria-label:common.loginPanel">
+        <form class="portal-form login-form" data-login-form novalidate>
+          <label for="login-username"><span data-i18n="login.account">账号</span><input id="login-username" name="username" type="text" autocomplete="username" required data-i18n-attr="placeholder:login.accountPlaceholder"></label>
+          <label for="login-password"><span data-i18n="login.password">密码</span><input id="login-password" name="password" type="password" autocomplete="current-password" required data-i18n-attr="placeholder:login.passwordPlaceholder"></label>
+          <div class="form-alert" data-login-alert role="alert" aria-live="polite"></div>
+          <button class="portal-button portal-button-gold" type="submit" data-login-submit><span data-i18n="login.submit">登录门户</span><span aria-hidden="true">→</span></button>
+        </form>
+        <p class="login-demo" data-i18n="login.demoHint">演示账号：student / student-demo，管理员：admin / admin-demo</p>
+        <div class="login-panel-footer"><span>© 2026 CGU</span><span>Academic services</span></div>
+      </section>
+    </main>
+
+    <div class="portal-toast" data-toast role="status" aria-live="polite"></div>
+  </body>
+</html>

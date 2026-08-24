@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="China Genshin University administration portal">
+    <title data-i18n="admin.pageTitle">CGU · 后台管理</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="portal.css">
+    <script src="i18n.js" defer></script>
+    <script src="portal.js" defer></script>
+  </head>
+  <body class="portal-shell app-page" data-page="admin">
+    <a class="skip-link" href="#admin-main" data-i18n="common.skipMain">跳到主内容</a>
+    <header class="portal-header portal-header-light">
+      <div class="portal-container portal-header-inner">
+        <a class="portal-brand" href="index.html" aria-label="China Genshin University" data-i18n-attr="aria-label:brand.full">
+          <span class="portal-brand-mark" aria-hidden="true"><span></span></span>
+          <span class="portal-brand-copy"><strong>CGU</strong><small data-i18n="brand.name">原神大学</small></span>
+        </a>
+        <nav class="portal-nav" aria-label="管理员导航" data-i18n-attr="aria-label:common.adminNav">
+          <a class="is-active" href="#admin-overview" data-admin-nav="overview" data-i18n="admin.overview">总览</a>
+          <a href="#admin-courses" data-admin-nav="courses" data-i18n="admin.courses">课程管理</a>
+          <a href="#admin-announcements" data-admin-nav="announcements" data-i18n="admin.announcements">公告管理</a>
+        </nav>
+        <div class="portal-header-actions"><button class="portal-language" type="button" data-locale-toggle>English</button><span class="portal-user-chip" data-user-name>—</span><button class="portal-icon-button mobile-nav-toggle" type="button" aria-expanded="false" aria-controls="admin-mobile-nav" data-mobile-nav-toggle aria-label="打开菜单" data-i18n-attr="aria-label:nav.menu">☰</button><button class="portal-logout" type="button" data-logout data-i18n="nav.logout">退出登录</button></div>
+      </div>
+      <nav class="portal-mobile-nav" id="admin-mobile-nav" aria-label="移动端导航" data-i18n-attr="aria-label:common.mobileNav" aria-hidden="true"><a href="#admin-overview" data-admin-nav="overview" data-i18n="admin.overview">总览</a><a href="#admin-courses" data-admin-nav="courses" data-i18n="admin.courses">课程管理</a><a href="#admin-announcements" data-admin-nav="announcements" data-i18n="admin.announcements">公告管理</a></nav>
+    </header>
+
+    <main id="admin-main" class="portal-main portal-container">
+      <div class="portal-page-heading"><div><p class="portal-kicker" data-i18n="admin.kicker">CGU ADMINISTRATION</p><h1 data-i18n="admin.title">教务管理台</h1><p class="portal-welcome" data-i18n="admin.subtitle">维护课程、公告与校园学术信息。</p></div><a class="portal-button portal-button-outline" href="portal.html" data-i18n="nav.portal">学生教务</a></div>
+      <div class="portal-alert" data-page-alert role="alert" aria-live="polite"></div>
+
+      <section class="portal-section" id="admin-overview" data-admin-section="overview"><div class="metric-grid"><article class="metric-card"><span class="metric-label" data-i18n="admin.totalCourses">课程总数</span><strong data-admin-metric="courses">—</strong><small>COURSES</small></article><article class="metric-card"><span class="metric-label" data-i18n="admin.totalStudents">学生总数</span><strong data-admin-metric="students">—</strong><small>STUDENTS</small></article><article class="metric-card"><span class="metric-label" data-i18n="admin.openSections">开放班级</span><strong data-admin-metric="sections">—</strong><small>OPEN SECTIONS</small></article><article class="metric-card metric-card-accent"><span class="metric-label" data-i18n="admin.pending">待处理事项</span><strong data-admin-metric="pending">—</strong><small>PENDING</small></article></div><div class="admin-quick-links"><a href="#admin-courses" class="quick-link"><span>01</span><strong data-i18n="admin.newCourse">新增课程</strong><b>→</b></a><a href="#admin-announcements" class="quick-link"><span>02</span><strong data-i18n="admin.newAnnouncement">发布公告</strong><b>→</b></a></div></section>
+
+      <section class="portal-section" id="admin-courses" data-admin-section="courses"><div class="section-heading-inline"><div><p class="portal-kicker">ACADEMICS</p><h2 data-i18n="admin.courses">课程管理</h2></div><button class="portal-button portal-button-gold" type="button" data-new-course><span data-i18n="admin.newCourse">新增课程</span><span aria-hidden="true">+</span></button></div><div class="admin-editor" data-course-editor hidden><form class="portal-form admin-form" data-course-form novalidate><input type="hidden" name="id"><div class="form-grid"><label><span data-i18n="admin.code">课程代码</span><input name="code" required></label><label><span data-i18n="admin.term">学期</span><input name="term" placeholder="2026 秋季" data-i18n-attr="placeholder:admin.termPlaceholder" required></label><label><span data-i18n="admin.nameZh">中文名称</span><input name="nameZh" required></label><label><span data-i18n="admin.nameEn">英文名称</span><input name="nameEn"></label><label><span data-i18n="admin.teacher">授课教师</span><input name="teacher" required></label><label><span data-i18n="admin.credits">学分</span><input name="credits" type="number" min="0" step="0.5" required></label><label><span data-i18n="admin.capacity">容量</span><input name="capacity" type="number" min="1" required></label><label><span data-i18n="admin.type">课程类型</span><select name="type"><option value="required" data-i18n="portal.required">必修</option><option value="elective" data-i18n="portal.elective">选修</option></select></label></div><label><span data-i18n="admin.description">课程简介</span><textarea name="description" rows="3"></textarea></label><div class="form-actions"><button class="portal-button portal-button-gold" type="submit" data-i18n="admin.save">保存</button><button class="portal-button portal-button-outline" type="button" data-cancel-course data-i18n="admin.cancel">取消</button></div></form></div><div class="table-wrap"><table class="data-table admin-table"><thead><tr><th data-i18n="admin.code">课程代码</th><th data-i18n="portal.courseName">课程名称</th><th data-i18n="admin.teacher">授课教师</th><th data-i18n="admin.credits">学分</th><th data-i18n="admin.term">学期</th><th data-i18n="admin.capacity">容量</th><th data-i18n="admin.actions">操作</th></tr></thead><tbody data-admin-course-list><tr><td colspan="7" class="empty-state" data-i18n="common.loading">加载中…</td></tr></tbody></table></div></section>
+
+      <section class="portal-section" id="admin-announcements" data-admin-section="announcements"><div class="section-heading-inline"><div><p class="portal-kicker">CAMPUS LIFE</p><h2 data-i18n="admin.announcements">公告管理</h2></div><button class="portal-button portal-button-gold" type="button" data-new-announcement><span data-i18n="admin.newAnnouncement">发布公告</span><span aria-hidden="true">+</span></button></div><div class="admin-editor" data-announcement-editor hidden><form class="portal-form admin-form" data-announcement-form novalidate><input type="hidden" name="id"><div class="form-grid"><label><span data-i18n="admin.titleZh">中文标题</span><input name="titleZh" required></label><label><span data-i18n="admin.titleEn">英文标题</span><input name="titleEn"></label><label><span data-i18n="admin.publishedAt">发布时间</span><input name="publishedAt" type="datetime-local"></label><label><span data-i18n="admin.type">类型</span><input name="type" value="CAMPUS"></label></div><label><span data-i18n="admin.content">公告内容</span><textarea name="content" rows="5" required></textarea></label><div class="form-actions"><button class="portal-button portal-button-gold" type="submit" data-i18n="admin.save">保存</button><button class="portal-button portal-button-outline" type="button" data-cancel-announcement data-i18n="admin.cancel">取消</button></div></form></div><div class="admin-announcement-list" data-admin-announcement-list><p class="empty-state" data-i18n="common.loading">加载中…</p></div></section>
+    </main>
+    <div class="portal-toast" data-toast role="status" aria-live="polite"></div>
+  </body>
+</html>

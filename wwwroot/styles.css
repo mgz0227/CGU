@@ -45,7 +45,7 @@ button { cursor: pointer; }
 .brand-orbit-two { transform: rotate(-40deg); border-color: rgba(166,206,197,.8); }
 .brand-copy { display: flex; flex-direction: column; line-height: 1; }
 .brand-copy strong { font-family: Georgia, "Times New Roman", serif; font-size: 23px; font-weight: 500; letter-spacing: .11em; }
-.brand-copy small { margin-top: 5px; font-size: 10px; letter-spacing: .24em; }
+.brand-copy small { max-width: 190px; margin-top: 5px; overflow: hidden; font-size: 9px; letter-spacing: .08em; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
 .desktop-nav { display: flex; align-items: center; gap: 30px; margin: 0 auto; font-size: 13px; }
 .desktop-nav a { position: relative; padding: 29px 0 27px; opacity: .82; }
 .desktop-nav a::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; content: ""; background: var(--gold-soft); transform: scaleX(0); transform-origin: right; transition: transform .25s ease; }
@@ -54,6 +54,8 @@ button { cursor: pointer; }
 .header-actions { display: flex; align-items: center; gap: 18px; }
 .portal-link { font-size: 12px; opacity: .8; white-space: nowrap; }
 .portal-link span { color: var(--gold-soft); }
+.language-toggle { min-width: 38px; min-height: 32px; padding: 0 9px; border: 1px solid currentColor; border-radius: 2px; color: currentColor; background: transparent; font-size: 10px; font-weight: 700; letter-spacing: .08em; opacity: .88; transition: color .2s ease, background .2s ease, border-color .2s ease; }
+.language-toggle:hover, .language-toggle:focus-visible { color: var(--ink); background: var(--gold-soft); border-color: var(--gold-soft); opacity: 1; }
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 14px; min-height: 48px; padding: 0 22px; border: 1px solid transparent; border-radius: 2px; font-size: 13px; font-weight: 700; letter-spacing: .08em; transition: color .2s ease, background .2s ease, border-color .2s ease, transform .2s ease; }
 .button:hover { transform: translateY(-2px); }
 .button-small { min-height: 40px; padding: 0 16px; font-size: 11px; }
@@ -82,13 +84,14 @@ button { cursor: pointer; }
 .eyebrow { margin: 0 0 18px; color: var(--coral); font-size: 10px; font-weight: 800; letter-spacing: .22em; line-height: 1.5; }
 .eyebrow-light { color: var(--gold-soft); }
 .eyebrow span { display: inline-block; width: 26px; height: 1px; margin-right: 9px; vertical-align: middle; background: currentColor; }
+.eyebrow .eyebrow-copy { width: auto; height: auto; margin-right: 0; vertical-align: baseline; background: none; }
 .hero h1 { margin: 0; font-family: Georgia, "Songti SC", "STSong", serif; font-size: 74px; font-weight: 400; letter-spacing: .02em; line-height: 1.1; }
 .hero h1 em { color: var(--gold-soft); font-style: normal; }
 .hero-lede { max-width: 480px; margin: 29px 0 34px; color: rgba(255,253,248,.82); font-size: 16px; line-height: 1.95; }
 .hero-actions { display: flex; align-items: center; gap: 26px; }
 .text-link { display: inline-flex; align-items: center; gap: 10px; padding-bottom: 4px; border-bottom: 1px solid currentColor; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
-.text-link span { font-size: 16px; line-height: 1; transition: transform .2s ease; }
-.text-link:hover span { transform: translate(3px, -2px); }
+.text-link > span[aria-hidden="true"] { font-size: 16px; line-height: 1; transition: transform .2s ease; }
+.text-link:hover > span[aria-hidden="true"] { transform: translate(3px, -2px); }
 .text-link-light { color: var(--white); border-bottom-color: rgba(255,255,255,.6); }
 .hero-note { width: 235px; margin: 70px 28px 0 40px; padding: 17px 0 0; border-top: 1px solid rgba(255,255,255,.6); }
 .note-topline { color: var(--mint); font-size: 9px; font-weight: 800; letter-spacing: .16em; }
@@ -113,7 +116,7 @@ button { cursor: pointer; }
 .section-line { width: 1px; height: 58px; background: var(--line); }
 .intro-main { max-width: 940px; }
 .intro-main h2, .section-heading-row h2, .admissions-section h2 { margin: 0; font-family: Georgia, "Songti SC", "STSong", serif; font-size: 57px; font-weight: 400; line-height: 1.18; letter-spacing: .01em; }
-.intro-main h2 span { color: var(--coral); }
+.intro-main h2 .about-title-em { color: var(--coral); }
 .intro-lower { display: grid; grid-template-columns: minmax(340px, 1.15fr) minmax(260px, .85fr); gap: 68px; align-items: end; margin-top: 60px; }
 .intro-image-wrap { position: relative; }
 .intro-image-wrap img { width: 100%; height: 340px; object-fit: cover; }
@@ -146,8 +149,8 @@ button { cursor: pointer; }
 .program-body p { min-height: 48px; margin: 0; color: rgba(16,37,43,.7); font-size: 12px; line-height: 1.7; }
 .program-meta { display: flex; justify-content: space-between; margin: 20px 0 17px; padding-top: 12px; border-top: 1px solid var(--line); color: rgba(16,37,43,.55); font-size: 10px; }
 .card-link { align-self: flex-start; padding: 0; border: 0; border-bottom: 1px solid rgba(16,37,43,.45); color: var(--ink); background: transparent; font-size: 11px; font-weight: 700; letter-spacing: .07em; }
-.card-link span { display: inline-block; margin-left: 6px; font-size: 15px; transition: transform .2s ease; }
-.card-link:hover span { transform: translate(3px, -2px); }
+.card-link > span[aria-hidden="true"] { display: inline-block; margin-left: 6px; font-size: 15px; transition: transform .2s ease; }
+.card-link:hover > span[aria-hidden="true"] { transform: translate(3px, -2px); }
 .programs-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 26px; color: rgba(244,240,231,.63); font-size: 11px; }
 .programs-footer .text-link { color: var(--gold-soft); }
 
@@ -195,7 +198,7 @@ button { cursor: pointer; }
 .footer-column a:hover, .footer-contact a:hover { color: var(--gold-soft); }
 .footer-contact p { margin: 10px 0 0; line-height: 1.8; }
 .footer-bottom { display: flex; align-items: center; justify-content: space-between; min-height: 57px; border-top: 1px solid rgba(244,240,231,.18); color: rgba(244,240,231,.46); font-size: 10px; letter-spacing: .04em; }
-.footer-bottom span:last-child span { color: var(--gold-soft); }
+.footer-bottom .footer-star { color: var(--gold-soft); }
 
 .apply-dialog { width: min(520px, calc(100% - 32px)); padding: 0; border: 0; border-radius: 0; color: var(--ink); background: var(--paper); box-shadow: 0 28px 90px rgba(0,0,0,.35); }
 .apply-dialog::backdrop { background: rgba(5,18,22,.7); backdrop-filter: blur(4px); }
@@ -215,7 +218,8 @@ button { cursor: pointer; }
 
 @media (max-width: 980px) {
   .container { width: min(var(--container), calc(100% - 44px)); }
-  .desktop-nav { gap: 19px; }
+  .brand-copy small { max-width: 130px; font-size: 8px; }
+  .desktop-nav { gap: 14px; font-size: 12px; }
   .portal-link { display: none; }
   .hero h1 { font-size: 62px; }
   .hero-note { margin-right: 0; }
