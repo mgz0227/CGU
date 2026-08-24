@@ -51,15 +51,18 @@ func defaultConfig() AppConfig {
 func LoadConfig() AppConfig {
 	cfg := defaultConfig()
 	configDatabaseEnabledSet := false
+	configAddressSet := false
 	configFile := firstEnv("CGU_CONFIG_FILE", "CONFIG_FILE")
 	if configFile == "" {
 		configFile = "config.json"
 	}
 	if data, err := os.ReadFile(configFile); err == nil {
 		var raw struct {
+			Server   map[string]json.RawMessage `json:"server"`
 			Database map[string]json.RawMessage `json:"database"`
 		}
 		if json.Unmarshal(data, &raw) == nil {
+			_, configAddressSet = raw.Server["address"]
 			_, configDatabaseEnabledSet = raw.Database["enabled"]
 		}
 		if err := json.Unmarshal(data, &cfg); err != nil {
@@ -100,7 +103,7 @@ func LoadConfig() AppConfig {
 	}
 	if addressOverride != "" {
 		address = addressOverride
-	} else if firstEnvWithFile(fileEnv, "CGU_PORT") != "" || firstEnvWithFile(fileEnv, "PORT") != "" || firstEnvWithFile(fileEnv, "CGU_HOST") != "" {
+	} else if firstEnvWithFile(fileEnv, "CGU_PORT") != "" || firstEnvWithFile(fileEnv, "PORT") != "" || firstEnvWithFile(fileEnv, "CGU_HOST") != "" || !configAddressSet {
 		address = fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	} else if strings.TrimSpace(address) == "" {
 		address = fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

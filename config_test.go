@@ -23,7 +23,7 @@ func TestLoadConfigPrecedenceAndExplicitDatabaseDisable(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	envPath := filepath.Join(dir, ".env")
-	if err := os.WriteFile(configPath, []byte(`{"server":{"address":"0.0.0.0:8111"},"database":{"enabled":false,"host":"db-from-config"}}`), 0600); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"server":{"host":"0.0.0.0","port":8111},"database":{"enabled":false,"host":"db-from-config"}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(envPath, []byte("CGU_DB_USER=cgu\nCGU_DB_NAME=cgu\nCGU_DB_PASSWORD=secret\nCGU_PORT=9222\n"), 0600); err != nil {
@@ -41,7 +41,7 @@ func TestLoadConfigPrecedenceAndExplicitDatabaseDisable(t *testing.T) {
 	if cfg.Database.Enabled {
 		t.Fatal("explicit database.enabled=false must remain disabled")
 	}
-	if cfg.Server.Address != "127.0.0.1:9222" {
+	if cfg.Server.Address != "0.0.0.0:9222" {
 		t.Fatalf("port override should rebuild address, got %q", cfg.Server.Address)
 	}
 	if cfg.Database.Host != "db-from-config" {
