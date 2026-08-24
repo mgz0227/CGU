@@ -23,7 +23,7 @@ func TestLoadConfigPrecedenceAndExplicitDatabaseDisable(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	envPath := filepath.Join(dir, ".env")
-	if err := os.WriteFile(configPath, []byte(`{"server":{"host":"0.0.0.0","port":8111},"database":{"enabled":false,"host":"db-from-config"},"adminUsername":"registrar","adminPassword":"configured-from-json"}`), 0600); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"server":{"host":"0.0.0.0","port":8111},"database":{"enabled":false,"host":"db-from-config"},"publicOrigin":"https://cgu.edu.kg/","adminUsername":"registrar","adminPassword":"configured-from-json"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(envPath, []byte("CGU_DB_USER=cgu\nCGU_DB_NAME=cgu\nCGU_DB_PASSWORD=secret\nCGU_PORT=9222\n"), 0600); err != nil {
@@ -49,6 +49,13 @@ func TestLoadConfigPrecedenceAndExplicitDatabaseDisable(t *testing.T) {
 	}
 	if cfg.AdminUsername != "registrar" || cfg.AdminPassword != "configured-from-json" {
 		t.Fatalf("administrator config was not loaded: username=%q password-set=%t", cfg.AdminUsername, cfg.AdminPassword != "")
+	}
+	if cfg.PublicOrigin != "https://cgu.edu.kg/" {
+		t.Fatalf("public origin was not loaded: %q", cfg.PublicOrigin)
+	}
+	t.Setenv("CGU_PUBLIC_ORIGIN", "https://portal.cgu.edu.kg")
+	if got := LoadConfig().PublicOrigin; got != "https://portal.cgu.edu.kg" {
+		t.Fatalf("process environment should override public origin, got %q", got)
 	}
 	t.Setenv("CGU_DB_ENABLED", "true")
 	if !LoadConfig().Database.Enabled {

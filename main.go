@@ -867,6 +867,7 @@ func first(values ...string) string {
 type Server struct {
 	store         *Store
 	staticDir     string
+	publicOrigin  string
 	sessions      map[string]session
 	sessionsMu    sync.Mutex
 	loginMu       sync.Mutex
@@ -1367,18 +1368,95 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *Server) originAllowed(r *http.Request) bool {
-	origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("Origin")), "/")
-	if origin == "" || !strings.HasPrefix(r.URL.Path, "/api") {
+	if r == nil || r.URL == nil || !strings.HasPrefix(r.URL.Path, "/api") {
 		return true
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
 	}
 	if r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch && r.Method != http.MethodDelete && r.Method != http.MethodOptions {
 		return true
 	}
-	return strings.EqualFold(origin, scheme+"://"+r.Host)
+	origin, ok := normalizeOrigin(r.Header.Get("Origin"))
+	if strings.TrimSpace(r.Header.Get("Origin")) == "" {
+		return true
+	}
+	if !ok {
+		return false
+	}
+	if s.publicOrigin != "" {
+		return strings.EqualFold(origin, s.publicOrigin)
+	}
+	// TLS is commonly terminated by a reverse proxy before the Go service.
+	// When no public origin is configured, accept only this request Host over
+	// either standard web scheme; never trust arbitrary forwarded headers.
+	host, ok := normalizeRequestHost(r.Host)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(origin, "http://"+host) || strings.EqualFold(origin, "https://"+host)
+}
+
+// normalizeOrigin canonicalizes the small subset of origins accepted by the
+// same-origin policy. Paths, credentials, queries, fragments, and non-web
+// schemes are rejected so configuration and request headers cannot broaden the
+// allow-list unexpectedly.
+func normalizeOrigin(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.ContainsAny(raw, "\r\n") {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Opaque != "" || u.Host == "" || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
+		return "", false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	hostname := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if hostname == "" || strings.ContainsAny(hostname, "\r\n/@") {
+		return "", false
+	}
+	port := u.Port()
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	host := hostname
+	if strings.Contains(hostname, ":") {
+		host = "[" + hostname + "]"
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return scheme + "://" + host, true
+}
+
+func normalizeRequestHost(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.ContainsAny(raw, "\r\n") {
+		return "", false
+	}
+	// Parse the host with a neutral scheme, then remove only the default ports
+	// for either web scheme so Host cgu.example:443 matches HTTPS origins that
+	// omit the default port.
+	u, err := url.Parse("http://" + raw)
+	if err != nil || u.User != nil || u.Opaque != "" || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", false
+	}
+	hostname := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if hostname == "" || strings.ContainsAny(hostname, "\r\n/@") {
+		return "", false
+	}
+	port := u.Port()
+	if port == "80" || port == "443" {
+		port = ""
+	}
+	host := hostname
+	if strings.Contains(hostname, ":") {
+		host = "[" + hostname + "]"
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return host, true
 }
 
 func stateChangingAPIRequest(r *http.Request) bool {
@@ -1463,8 +1541,8 @@ func (s *Server) pruneLoginAttemptsLocked(now time.Time) {
 }
 
 func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
-	origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("Origin")), "/")
-	if origin != "" && s.originAllowed(&http.Request{Method: http.MethodPost, URL: r.URL, Host: r.Host, Header: r.Header, TLS: r.TLS}) {
+	origin, originOK := normalizeOrigin(r.Header.Get("Origin"))
+	if originOK && s.originAllowed(&http.Request{Method: http.MethodPost, URL: r.URL, Host: r.Host, Header: r.Header, TLS: r.TLS}) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -1696,7 +1774,18 @@ func main() {
 	}
 	handler := NewServer(store, cfg.StaticDir)
 	// LoadConfig already applies environment, .env, and config.json precedence.
-	handler.cookieSecure = cfg.CookieSecure
+	if strings.TrimSpace(cfg.PublicOrigin) != "" {
+		publicOrigin, ok := normalizeOrigin(cfg.PublicOrigin)
+		if !ok {
+			log.Fatal("publicOrigin must be an http or https origin without a path, query, or fragment")
+		}
+		handler.publicOrigin = publicOrigin
+		// A configured HTTPS origin means the browser must receive a Secure
+		// session cookie even if cookieSecure was omitted from the config.
+		handler.cookieSecure = cfg.CookieSecure || strings.HasPrefix(publicOrigin, "https://")
+	} else {
+		handler.cookieSecure = cfg.CookieSecure
+	}
 	handler.setStorageMode(storageMode)
 	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	log.Printf("CGU Go service listening on http://%s", addr)

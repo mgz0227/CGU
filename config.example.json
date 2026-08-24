@@ -18,6 +18,7 @@
   },
   "staticDir": "web",
   "cookieSecure": false,
+  "publicOrigin": "https://cgu.edu.kg",
   "adminUsername": "admin",
   "adminPassword": ""
 }

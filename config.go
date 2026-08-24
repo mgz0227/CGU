@@ -16,6 +16,7 @@ type AppConfig struct {
 	Database      DatabaseConfig `json:"database"`
 	StaticDir     string         `json:"staticDir"`
 	CookieSecure  bool           `json:"cookieSecure"`
+	PublicOrigin  string         `json:"publicOrigin"`
 	AdminUsername string         `json:"adminUsername"`
 	AdminPassword string         `json:"adminPassword"`
 }
@@ -76,6 +77,7 @@ func LoadConfig() AppConfig {
 
 	cfg.StaticDir = envString(fileEnv, "CGU_STATIC_DIR", cfg.StaticDir)
 	cfg.CookieSecure = envBool(fileEnv, "CGU_COOKIE_SECURE", cfg.CookieSecure)
+	cfg.PublicOrigin = envString(fileEnv, "CGU_PUBLIC_ORIGIN", cfg.PublicOrigin)
 	cfg.AdminUsername = envString(fileEnv, "CGU_ADMIN_USERNAME", cfg.AdminUsername)
 	cfg.AdminPassword = envString(fileEnv, "CGU_ADMIN_PASSWORD", cfg.AdminPassword)
 	if strings.TrimSpace(cfg.AdminUsername) == "" {

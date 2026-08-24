@@ -51,7 +51,16 @@ go run .
 
 也可以设置 `CGU_DB_DSN`，或使用 `config.json` / `.env`（不要把真实密码提交到 Git）。配置优先级为进程环境变量 > `.env` > `config.json` > 默认值；模板见 [`config.example.json`](config.example.json) 和 [`.env.example`](.env.example)。`/healthz` 会返回 `storage: mysql`、`memory` 或 `memory-fallback`。
 
-正式 HTTPS 部署请将 `CGU_COOKIE_SECURE=true`，并在反向代理/WAF 层配置 TLS、请求体限制和边缘限流；安全审计记录见 [`security_best_practices_report.md`](security_best_practices_report.md)。
+正式 HTTPS 部署请在私有 `config.json` 或环境中设置公网来源，并启用安全 Cookie：
+
+```json
+{
+  "publicOrigin": "https://cgu.edu.kg",
+  "cookieSecure": true
+}
+```
+
+对应环境变量为 `CGU_PUBLIC_ORIGIN=https://cgu.edu.kg` 和 `CGU_COOKIE_SECURE=true`。`publicOrigin` 必须是没有路径、查询或片段的 `http://`/`https://` 来源；它用于 TLS 在反向代理终止时的登录和 CSRF 同源校验。未配置时，服务只接受当前 `Host` 的标准 HTTP/HTTPS 来源，且不会信任任意 `X-Forwarded-*` 请求头。反向代理/WAF 仍应配置 TLS、请求体限制和边缘限流；安全审计记录见 [`security_best_practices_report.md`](security_best_practices_report.md)。
 
 ## 页面与接口
 

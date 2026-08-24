@@ -72,7 +72,8 @@
     const errorValue = payload?.error;
     const errorMessage = typeof errorValue === 'string' ? (payload?.message || errorValue) : errorValue?.message;
     if (!response.ok || payload?.ok === false) {
-      throw new ApiError(errorMessage || response.statusText || I18N.t('common.error'), response.status, errorValue?.code || '');
+      const errorCode = typeof errorValue === 'string' ? errorValue : errorValue?.code || '';
+      throw new ApiError(errorMessage || response.statusText || I18N.t('common.error'), response.status, errorCode);
     }
     return payload?.data ?? payload ?? {};
   };
@@ -261,7 +262,8 @@
         saveUser(user);
         redirectAfterLogin(user);
       } catch (error) {
-        if (error.status === 401 || error.status === 403) setError('login.errorInvalid');
+        if (error.code === 'origin_not_allowed' || error.code === 'csrf_required') setError('login.errorServiceConfig');
+        else if (error.status === 401) setError('login.errorInvalid');
         else setError(error.network || error.status >= 500 ? 'login.errorUnavailable' : 'login.errorInvalid');
       } finally {
         setButtonLoading(submit, false, 'login.submit');

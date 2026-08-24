@@ -166,14 +166,14 @@ func TestAcademicHTTPFlow(t *testing.T) {
 	}
 	csrfRequest.Header.Set("Content-Type", "application/json")
 	csrfRequest.Header.Set("X-CGU-Request", "1")
-	csrfRequest.Header.Set("Origin", "https://"+csrfRequest.Host)
+	csrfRequest.Header.Set("Origin", "https://foreign.example")
 	csrfRequest.Header.Set("X-Forwarded-Proto", "https")
 	csrfResponse, err := client.Do(csrfRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if csrfResponse.StatusCode != http.StatusForbidden {
-		t.Fatalf("spoofed forwarded-proto origin status = %d", csrfResponse.StatusCode)
+		t.Fatalf("foreign origin status = %d", csrfResponse.StatusCode)
 	}
 	csrfResponse.Body.Close()
 
@@ -213,6 +213,59 @@ func TestAcademicHTTPFlow(t *testing.T) {
 		t.Fatalf("course delete status = %d", response.StatusCode)
 	}
 	response.Body.Close()
+}
+
+func TestOriginAllowedBehindTLSProxy(t *testing.T) {
+	server := NewServer(NewStoreWithAdmin(testAdminUsername, testAdminPassword), "web")
+	request := httptest.NewRequest(http.MethodPost, "http://internal-cgu/api/auth/login", strings.NewReader(`{}`))
+	request.Host = "cgu.edu.kg"
+	request.Header.Set("Origin", "https://cgu.edu.kg")
+	request.Header.Set("X-CGU-Request", "1")
+	if !server.originAllowed(request) {
+		t.Fatal("same-site HTTPS origin should be accepted when TLS terminates before Go")
+	}
+	request.Host = "cgu.edu.kg:443"
+	if !server.originAllowed(request) {
+		t.Fatal("default HTTPS Host port should match the canonical origin")
+	}
+	request.Host = "cgu.edu.kg"
+
+	request.Header.Set("Origin", "https://foreign.example")
+	if server.originAllowed(request) {
+		t.Fatal("foreign origin must remain rejected")
+	}
+
+	server.publicOrigin = "https://cgu.edu.kg"
+	request.Host = "internal-cgu:8000"
+	request.Header.Set("Origin", "https://cgu.edu.kg/")
+	if !server.originAllowed(request) {
+		t.Fatal("configured public origin should be accepted independently of upstream Host")
+	}
+	request.Header.Set("Origin", "https://internal-cgu:8000")
+	if server.originAllowed(request) {
+		t.Fatal("configured public origin must reject the upstream Host origin")
+	}
+}
+
+func TestNormalizeOrigin(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+		ok    bool
+	}{
+		{input: "https://CGU.edu.kg/", want: "https://cgu.edu.kg", ok: true},
+		{input: "http://127.0.0.1:8000", want: "http://127.0.0.1:8000", ok: true},
+		{input: "https://cgu.edu.kg/login", ok: false},
+		{input: "https://cgu.edu.kg?next=/", ok: false},
+		{input: "javascript://cgu.edu.kg", ok: false},
+		{input: "null", ok: false},
+	}
+	for _, test := range tests {
+		got, ok := normalizeOrigin(test.input)
+		if ok != test.ok || got != test.want {
+			t.Errorf("normalizeOrigin(%q) = (%q, %t), want (%q, %t)", test.input, got, ok, test.want, test.ok)
+		}
+	}
 }
 
 func TestSecurityGuards(t *testing.T) {
