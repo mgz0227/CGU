@@ -1384,14 +1384,18 @@ func (s *Server) originAllowed(r *http.Request) bool {
 	if s.publicOrigin != "" {
 		return strings.EqualFold(origin, s.publicOrigin)
 	}
-	// TLS is commonly terminated by a reverse proxy before the Go service.
-	// When no public origin is configured, accept only this request Host over
-	// either standard web scheme; never trust arbitrary forwarded headers.
+	// A direct HTTP/HTTPS listener can infer its own scheme. When TLS is
+	// terminated by a reverse proxy, operators must configure publicOrigin;
+	// never trust arbitrary forwarded headers for this security decision.
 	host, ok := normalizeRequestHost(r.Host)
 	if !ok {
 		return false
 	}
-	return strings.EqualFold(origin, "http://"+host) || strings.EqualFold(origin, "https://"+host)
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return strings.EqualFold(origin, scheme+"://"+host)
 }
 
 // normalizeOrigin canonicalizes the small subset of origins accepted by the
@@ -1404,7 +1408,7 @@ func normalizeOrigin(raw string) (string, bool) {
 		return "", false
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.User != nil || u.Opaque != "" || u.Host == "" || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.User != nil || u.Opaque != "" || u.Host == "" || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return "", false
 	}
 	scheme := strings.ToLower(u.Scheme)

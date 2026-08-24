@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -221,14 +222,21 @@ func TestOriginAllowedBehindTLSProxy(t *testing.T) {
 	request.Host = "cgu.edu.kg"
 	request.Header.Set("Origin", "https://cgu.edu.kg")
 	request.Header.Set("X-CGU-Request", "1")
-	if !server.originAllowed(request) {
-		t.Fatal("same-site HTTPS origin should be accepted when TLS terminates before Go")
+	if server.originAllowed(request) {
+		t.Fatal("HTTPS origin must require publicOrigin when TLS terminates before Go")
 	}
-	request.Host = "cgu.edu.kg:443"
+	server.publicOrigin = "https://cgu.edu.kg"
 	if !server.originAllowed(request) {
-		t.Fatal("default HTTPS Host port should match the canonical origin")
+		t.Fatal("configured public origin should be accepted when TLS terminates before Go")
+	}
+	server.publicOrigin = ""
+	request.Host = "cgu.edu.kg:443"
+	request.TLS = &tls.ConnectionState{}
+	if !server.originAllowed(request) {
+		t.Fatal("direct HTTPS Host port should match the canonical origin")
 	}
 	request.Host = "cgu.edu.kg"
+	request.TLS = nil
 
 	request.Header.Set("Origin", "https://foreign.example")
 	if server.originAllowed(request) {
@@ -247,6 +255,33 @@ func TestOriginAllowedBehindTLSProxy(t *testing.T) {
 	}
 }
 
+func TestTLSProxyLoginAndPreflightWithPublicOrigin(t *testing.T) {
+	server := NewServer(NewStoreWithAdmin(testAdminUsername, testAdminPassword), "web")
+	server.publicOrigin = "https://cgu.edu.kg"
+
+	loginRequest := httptest.NewRequest(http.MethodPost, "http://upstream/api/auth/login", strings.NewReader(`{"username":"initial-admin","password":"test-admin-password-2026!"}`))
+	loginRequest.Host = "upstream:8000"
+	loginRequest.Header.Set("Origin", "https://cgu.edu.kg")
+	loginRequest.Header.Set("X-CGU-Request", "1")
+	loginResponse := httptest.NewRecorder()
+	server.ServeHTTP(loginResponse, loginRequest)
+	if loginResponse.Code != http.StatusOK {
+		t.Fatalf("TLS proxy login status = %d, body = %s", loginResponse.Code, loginResponse.Body.String())
+	}
+	if cookie := loginResponse.Header().Get("Set-Cookie"); !strings.Contains(cookie, "HttpOnly") || !strings.Contains(cookie, "SameSite=Lax") {
+		t.Fatalf("login cookie missing session protections: %q", cookie)
+	}
+
+	optionsRequest := httptest.NewRequest(http.MethodOptions, "http://upstream/api/auth/login", nil)
+	optionsRequest.Host = "upstream:8000"
+	optionsRequest.Header.Set("Origin", "https://cgu.edu.kg")
+	optionsResponse := httptest.NewRecorder()
+	server.ServeHTTP(optionsResponse, optionsRequest)
+	if optionsResponse.Code != http.StatusNoContent || optionsResponse.Header().Get("Access-Control-Allow-Origin") != "https://cgu.edu.kg" {
+		t.Fatalf("preflight = status %d, allow-origin %q", optionsResponse.Code, optionsResponse.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
 func TestNormalizeOrigin(t *testing.T) {
 	tests := []struct {
 		input string
@@ -257,6 +292,7 @@ func TestNormalizeOrigin(t *testing.T) {
 		{input: "http://127.0.0.1:8000", want: "http://127.0.0.1:8000", ok: true},
 		{input: "https://cgu.edu.kg/login", ok: false},
 		{input: "https://cgu.edu.kg?next=/", ok: false},
+		{input: "https://cgu.edu.kg?", ok: false},
 		{input: "javascript://cgu.edu.kg", ok: false},
 		{input: "null", ok: false},
 	}

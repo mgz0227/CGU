@@ -60,7 +60,7 @@ go run .
 }
 ```
 
-对应环境变量为 `CGU_PUBLIC_ORIGIN=https://cgu.edu.kg` 和 `CGU_COOKIE_SECURE=true`。`publicOrigin` 必须是没有路径、查询或片段的 `http://`/`https://` 来源；它用于 TLS 在反向代理终止时的登录和 CSRF 同源校验。未配置时，服务只接受当前 `Host` 的标准 HTTP/HTTPS 来源，且不会信任任意 `X-Forwarded-*` 请求头。反向代理/WAF 仍应配置 TLS、请求体限制和边缘限流；安全审计记录见 [`security_best_practices_report.md`](security_best_practices_report.md)。
+对应环境变量为 `CGU_PUBLIC_ORIGIN=https://cgu.edu.kg` 和 `CGU_COOKIE_SECURE=true`。`publicOrigin` 必须是没有路径、查询或片段的 `http://`/`https://` 来源；它用于 TLS 在反向代理终止时的登录和 CSRF 同源校验，反向代理部署必须配置此项。未配置时，服务只按 Go 监听器实际看到的 HTTP/HTTPS 方案接受当前 `Host`，且不会信任任意 `X-Forwarded-*` 请求头。反向代理/WAF 仍应配置 TLS、请求体限制和边缘限流；安全审计记录见 [`security_best_practices_report.md`](security_best_practices_report.md)。
 
 ## 页面与接口
 

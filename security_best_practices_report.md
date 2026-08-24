@@ -94,7 +94,8 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
 - Residual mitigation: set `CGU_PUBLIC_ORIGIN` (or `publicOrigin`) to the
   exact public HTTPS origin when TLS terminates at a reverse proxy. With no
   explicit origin, the fallback accepts only the current request Host over
-  HTTP or HTTPS and never trusts client-supplied `X-Forwarded-*` headers.
+  the scheme actually visible to Go and never trusts client-supplied
+  `X-Forwarded-*` headers.
 
 ### GO-CSRF-002: TLS-terminating proxy origin mismatch (High, fixed)
 
@@ -104,9 +105,9 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
   login requests before password verification.
 - Impact: legitimate same-site login and other state-changing requests were
   returned as `403 origin_not_allowed`.
-- Fix: add an explicit normalized public origin and a same-Host HTTP/HTTPS
-  fallback for deployments that have not yet added the setting. Forwarded
-  scheme and host headers remain untrusted.
+- Fix: add an explicit normalized public origin and retain a strict direct-
+  listener fallback based on the scheme visible to Go. Forwarded scheme and
+  host headers remain untrusted.
 - Deployment requirement: configure `CGU_PUBLIC_ORIGIN=https://cgu.edu.kg`
   and `CGU_COOKIE_SECURE=true`, then restart the service with the new build.
 
