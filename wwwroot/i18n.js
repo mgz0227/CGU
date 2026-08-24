@@ -426,6 +426,44 @@
     'home.formNote': 'By submitting, you agree that CGU may contact you.'
   };
 
+  // Keep the shared fallback aligned with the homepage's current seven-nation copy.
+  Object.assign(homeEnglish, {
+    'home.applicationOpen': 'Autumn 2026 applications open · Snezhnaya track added',
+    'home.login': 'Sign in',
+    'home.apply': 'Apply now',
+    'home.closeApplication': 'Close application window',
+    'home.footerLogin': 'Sign in',
+    'home.campusQuote': '“The snowfields of Snezhnaya are waiting for new researchers.”',
+    'home.campusLocation': 'Snezhnaya campus · Polar research frontier',
+    'home.filterFontaine': 'Fontaine',
+    'home.filterNatlan': 'Natlan',
+    'home.filterSnezhnaya': 'Snezhnaya',
+    'home.regionFontaine': 'Fontaine campus',
+    'home.regionNatlan': 'Natlan campus',
+    'home.regionSnezhnaya': 'Snezhnaya campus',
+    'home.programJusticeImageAlt': 'Bright architecture beside the water',
+    'home.programFlameImageAlt': 'Open landscape in strong sunlight',
+    'home.programPolarImageAlt': 'Snow mountains beneath a polar night sky',
+    'home.programJusticeTitle': 'Judgment and mechanical civilization',
+    'home.programFlameTitle': 'Fire and competitive ecology',
+    'home.programPolarTitle': 'Snezhnaya studies and polar governance',
+    'home.programJusticeDescription': 'Study rules, energy, and invention through Fontaine’s courts and workshops.',
+    'home.programFlameDescription': 'Conduct field research between tribes, rituals, and the arena.',
+    'home.programPolarDescription': 'Use Version 7.0 “Everwinter Without Mercy” as a starting point for polar society and travel ethics.',
+    'home.degreeEngineering': 'BEng',
+    'home.degreeFieldwork': 'BA Fieldwork',
+    'home.degreePolarStudies': 'MSc Polar Studies',
+    'home.programsMore': 'Interdisciplinary courses across all seven nations',
+    'home.viewAllNews': 'Read official Genshin news',
+    'home.featureTitle': 'Snezhnaya opening week: begin a new research journey in 7.0',
+    'home.featureDescription': 'The official Version 7.0 “Everwinter Without Mercy” brings the journey to Snezhnaya; CGU now offers a matching polar studies track.',
+    'home.registerEvent': 'Read the official version notice',
+    'home.newsSnezhnayaType': 'WORLD UPDATE',
+    'home.newsSnezhnayaTitle': 'Version 7.0 “Everwinter Without Mercy”: Snezhnaya campus opens',
+    'home.newsSnezhnayaDescription': 'Following the official update, Snezhnaya becomes the next stage of the journey and CGU opens a related research track.',
+    'home.newsSnezhnayaAria': 'Read the official Snezhnaya 7.0 news'
+  });
+
   const defaultText = new WeakMap();
   const defaultAttrs = new WeakMap();
 

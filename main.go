@@ -14,9 +14,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,13 +29,20 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
 	sessionCookie = "cgu_session"
 	sessionTTL    = 8 * time.Hour
-	passwordIters = 210_000
 	bodyLimit     = 1 << 20
+	loginWindow   = 5 * time.Minute
+	loginBlock    = 15 * time.Minute
+	loginMaxFails = 8
+	loginMaxKeys  = 10_000
+	maxSessions   = 50_000
+	dummyBcrypt   = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 )
 
 type User struct {
@@ -179,14 +186,16 @@ type session struct {
 }
 
 type Store struct {
-	mu            sync.RWMutex
-	db            *sql.DB
-	users         map[string]*User
-	courses       []*Course
-	enrollments   []*Enrollment
-	grades        []*Grade
-	schedule      []*ScheduleEntry
-	announcements []*Announcement
+	mu                      sync.RWMutex
+	db                      *sql.DB
+	users                   map[string]*User
+	studentPasswordOverride bool
+	adminPasswordOverride   bool
+	courses                 []*Course
+	enrollments             []*Enrollment
+	grades                  []*Grade
+	schedule                []*ScheduleEntry
+	announcements           []*Announcement
 }
 
 func NewStore() *Store {
@@ -194,13 +203,15 @@ func NewStore() *Store {
 }
 
 func NewStoreWithPasswords(studentPassword, adminPassword string) *Store {
+	studentPasswordOverride := studentPassword != "" && studentPassword != "student-demo"
+	adminPasswordOverride := adminPassword != "" && adminPassword != "admin-demo"
 	if studentPassword == "" {
 		studentPassword = "student-demo"
 	}
 	if adminPassword == "" {
 		adminPassword = "admin-demo"
 	}
-	s := &Store{users: make(map[string]*User)}
+	s := &Store{users: make(map[string]*User), studentPasswordOverride: studentPasswordOverride, adminPasswordOverride: adminPasswordOverride}
 	s.users["student"] = &User{
 		ID: "student", Username: "student", Name: "星尘同学", Email: "student@cgu.local", Role: "student",
 		PasswordHash: hashPassword(studentPassword), StudentID: "CGU2026001", College: "风与自然科学学院", Year: "2026",
@@ -214,16 +225,27 @@ func NewStoreWithPasswords(studentPassword, adminPassword string) *Store {
 }
 
 func (s *Store) authenticate(identifier, password string) *User {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	found := false
 	for _, user := range s.users {
 		if strings.EqualFold(user.Username, identifier) || strings.EqualFold(user.Email, identifier) {
-			if verifyPassword(password, user.PasswordHash) {
-				copy := *user
-				return &copy
+			found = true
+			if !verifyPassword(password, user.PasswordHash) {
+				return nil
 			}
-			return nil
+			// Upgrade hashes created by older builds after a successful login.
+			if strings.HasPrefix(user.PasswordHash, "pbkdf2-sha256$") {
+				user.PasswordHash = hashPassword(password)
+				s.persistUserLocked(user)
+			}
+			copy := *user
+			return &copy
 		}
+	}
+	if !found {
+		// Keep unknown-account timing close to a real password check.
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyBcrypt), []byte(password))
 	}
 	return nil
 }
@@ -687,18 +709,26 @@ func first(values ...string) string {
 }
 
 type Server struct {
-	store        *Store
-	staticDir    string
-	sessions     map[string]session
-	sessionsMu   sync.Mutex
-	cookieSecure bool
-	storageMode  string
-	storageMu    sync.RWMutex
+	store         *Store
+	staticDir     string
+	sessions      map[string]session
+	sessionsMu    sync.Mutex
+	loginMu       sync.Mutex
+	loginAttempts map[string]*loginAttempt
+	cookieSecure  bool
+	storageMode   string
+	storageMu     sync.RWMutex
+}
+
+type loginAttempt struct {
+	failures   int
+	windowFrom time.Time
+	blockedTo  time.Time
 }
 
 func NewServer(store *Store, staticDir string) *Server {
 	secure := strings.EqualFold(os.Getenv("CGU_COOKIE_SECURE"), "1") || strings.EqualFold(os.Getenv("CGU_COOKIE_SECURE"), "true")
-	return &Server{store: store, staticDir: staticDir, sessions: make(map[string]session), cookieSecure: secure, storageMode: "memory"}
+	return &Server{store: store, staticDir: staticDir, sessions: make(map[string]session), loginAttempts: make(map[string]*loginAttempt), cookieSecure: secure, storageMode: "memory"}
 }
 
 func (s *Server) setStorageMode(mode string) {
@@ -715,6 +745,9 @@ func (s *Server) storageStatus() string {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	if r.TLS != nil {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
 	if r.Method == http.MethodOptions && strings.HasPrefix(r.URL.Path, "/api") {
 		s.handleOptions(w, r)
 		return
@@ -723,7 +756,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErr(403, "origin_not_allowed", "request origin is not allowed"))
 		return
 	}
+	if stateChangingAPIRequest(r) && r.Header.Get("X-CGU-Request") != "1" {
+		writeError(w, apiErr(403, "csrf_required", "a same-site request header is required"))
+		return
+	}
 	if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/api") {
+		w.Header().Set("Cache-Control", "no-store")
 		s.handleAPI(w, r)
 		return
 	}
@@ -902,7 +940,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var input LoginRequest
-	if err := decodeJSON(r, &input); err != nil {
+	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, apiErr(400, "invalid_input", "username and password are required"))
 		return
 	}
@@ -911,13 +949,47 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErr(400, "invalid_input", "username and password are required"))
 		return
 	}
+	rateKey := loginRateKey(r, identifier)
+	if retry, allowed := s.loginAllowed(rateKey); !allowed {
+		seconds := int(retry / time.Second)
+		if retry%time.Second != 0 {
+			seconds++
+		}
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		writeError(w, apiErr(429, "login_rate_limited", "too many failed sign-in attempts; try again later"))
+		return
+	}
 	user := s.store.authenticate(identifier, input.Password)
 	if user == nil {
+		s.loginFailure(rateKey)
 		writeError(w, apiErr(401, "invalid_credentials", "username or password is incorrect"))
 		return
 	}
+	s.loginSuccess(rateKey)
 	token := randomID(32)
 	s.sessionsMu.Lock()
+	now := time.Now()
+	for candidate, item := range s.sessions {
+		if now.After(item.Expires) {
+			delete(s.sessions, candidate)
+		}
+	}
+	if len(s.sessions) >= maxSessions {
+		// Evict the earliest-expiring session before accepting a new one.
+		var oldestToken string
+		var oldest time.Time
+		for candidate, item := range s.sessions {
+			if oldestToken == "" || item.Expires.Before(oldest) {
+				oldestToken, oldest = candidate, item.Expires
+			}
+		}
+		if oldestToken != "" {
+			delete(s.sessions, oldestToken)
+		}
+	}
 	s.sessions[token] = session{UserID: user.ID, Expires: time.Now().Add(sessionTTL)}
 	s.sessionsMu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: int(sessionTTL.Seconds()), Expires: time.Now().Add(sessionTTL)})
@@ -951,7 +1023,7 @@ func (s *Server) changeEnrollment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input EnrollmentRequest
-	if err := decodeJSON(r, &input); err != nil || strings.TrimSpace(input.CourseID) == "" {
+	if err := decodeJSON(w, r, &input); err != nil || strings.TrimSpace(input.CourseID) == "" {
 		writeError(w, apiErr(400, "invalid_input", "courseId is required"))
 		return
 	}
@@ -995,7 +1067,7 @@ func (s *Server) announcementByID(w http.ResponseWriter, r *http.Request, id str
 
 func (s *Server) createCourse(w http.ResponseWriter, r *http.Request) {
 	var input CourseInput
-	if err := decodeJSON(r, &input); err != nil {
+	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, apiErr(400, "invalid_input", "course is required"))
 		return
 	}
@@ -1010,7 +1082,7 @@ func (s *Server) createCourse(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateCourse(w http.ResponseWriter, r *http.Request, id string) {
 	var input CourseInput
-	if err := decodeJSON(r, &input); err != nil {
+	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, apiErr(400, "invalid_input", "course is required"))
 		return
 	}
@@ -1033,7 +1105,7 @@ func (s *Server) deleteCourse(w http.ResponseWriter, id string) {
 
 func (s *Server) createAnnouncement(w http.ResponseWriter, r *http.Request) {
 	var input AnnouncementInput
-	if err := decodeJSON(r, &input); err != nil {
+	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, apiErr(400, "invalid_input", "announcement is required"))
 		return
 	}
@@ -1048,7 +1120,7 @@ func (s *Server) createAnnouncement(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateAnnouncement(w http.ResponseWriter, r *http.Request, id string) {
 	var input AnnouncementInput
-	if err := decodeJSON(r, &input); err != nil {
+	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, apiErr(400, "invalid_input", "announcement is required"))
 		return
 	}
@@ -1123,15 +1195,96 @@ func (s *Server) originAllowed(r *http.Request) bool {
 	return strings.EqualFold(origin, scheme+"://"+r.Host)
 }
 
+func stateChangingAPIRequest(r *http.Request) bool {
+	if !strings.HasPrefix(r.URL.Path, "/api") {
+		return false
+	}
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func loginRateKey(r *http.Request, identifier string) string {
+	client := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(client); err == nil && host != "" {
+		client = host
+	}
+	if client == "" {
+		client = "unknown"
+	}
+	return strings.ToLower(client) + "\x00" + strings.ToLower(strings.TrimSpace(identifier))
+}
+
+func (s *Server) loginAllowed(key string) (time.Duration, bool) {
+	now := time.Now()
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	s.pruneLoginAttemptsLocked(now)
+	item := s.loginAttempts[key]
+	if item == nil {
+		if len(s.loginAttempts) >= loginMaxKeys {
+			// Keep the limiter bounded even when an attacker sprays identifiers.
+			var oldestKey string
+			var oldest time.Time
+			for candidate, attempt := range s.loginAttempts {
+				if oldestKey == "" || attempt.windowFrom.Before(oldest) {
+					oldestKey, oldest = candidate, attempt.windowFrom
+				}
+			}
+			if oldestKey != "" {
+				delete(s.loginAttempts, oldestKey)
+			}
+		}
+		item = &loginAttempt{windowFrom: now}
+		s.loginAttempts[key] = item
+	}
+	if now.Before(item.blockedTo) {
+		return time.Until(item.blockedTo), false
+	}
+	return 0, true
+}
+
+func (s *Server) loginFailure(key string) {
+	now := time.Now()
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	item := s.loginAttempts[key]
+	if item == nil || now.Sub(item.windowFrom) >= loginWindow {
+		item = &loginAttempt{windowFrom: now}
+		s.loginAttempts[key] = item
+	}
+	item.failures++
+	if item.failures >= loginMaxFails {
+		item.blockedTo = now.Add(loginBlock)
+	}
+}
+
+func (s *Server) loginSuccess(key string) {
+	s.loginMu.Lock()
+	delete(s.loginAttempts, key)
+	s.loginMu.Unlock()
+}
+
+func (s *Server) pruneLoginAttemptsLocked(now time.Time) {
+	for key, item := range s.loginAttempts {
+		if now.Sub(item.windowFrom) >= loginWindow && now.After(item.blockedTo) {
+			delete(s.loginAttempts, key)
+		}
+	}
+}
+
 func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
 	origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("Origin")), "/")
-	if origin != "" && s.originAllowed(&http.Request{Method: http.MethodPost, URL: r.URL, Host: r.Host, Header: r.Header}) {
+	if origin != "" && s.originAllowed(&http.Request{Method: http.MethodPost, URL: r.URL, Host: r.Host, Header: r.Header, TLS: r.TLS}) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CGU-Request")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1196,12 +1349,12 @@ func decodePathID(raw string) string {
 	return value
 }
 
-func decodeJSON(r *http.Request, target any) error {
+func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
 	if r.Body == nil {
 		return io.EOF
 	}
 	defer r.Body.Close()
-	decoder := json.NewDecoder(http.MaxBytesReader(nil, r.Body, bodyLimit))
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, bodyLimit))
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
@@ -1231,6 +1384,9 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://images.unsplash.com data:; font-src 'self' data:; connect-src 'self'; frame-src 'none'")
+	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+	w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 }
 
 func envOr(name, fallback string) string {
@@ -1241,29 +1397,34 @@ func envOr(name, fallback string) string {
 }
 
 func randomID(bytes int) string {
+	if bytes < 16 {
+		bytes = 16
+	}
 	buffer := make([]byte, bytes)
 	if _, err := rand.Read(buffer); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 36)
+		panic("crypto/rand unavailable")
 	}
 	return base64.RawURLEncoding.EncodeToString(buffer)
 }
 
 func hashPassword(password string) string {
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
 		panic(err)
 	}
-	hash := pbkdf2SHA256([]byte(password), salt, passwordIters, 32)
-	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", passwordIters, base64.StdEncoding.EncodeToString(salt), base64.StdEncoding.EncodeToString(hash))
+	return "bcrypt$" + string(hash)
 }
 
 func verifyPassword(password, encoded string) bool {
+	if strings.HasPrefix(encoded, "bcrypt$") {
+		return bcrypt.CompareHashAndPassword([]byte(strings.TrimPrefix(encoded, "bcrypt$")), []byte(password)) == nil
+	}
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 4 || parts[0] != "pbkdf2-sha256" {
 		return false
 	}
 	iterations, err := strconv.Atoi(parts[1])
-	if err != nil || iterations < 1 {
+	if err != nil || iterations < 1 || iterations > 2_000_000 {
 		return false
 	}
 	salt, err := base64.StdEncoding.DecodeString(parts[2])
@@ -1314,6 +1475,9 @@ func (s *Store) seed() {
 		&Course{ID: "cgu-nature-202", Code: "NAT202", NameZh: "提瓦特自然地理", NameEn: "Teyvat Physical Geography", Department: "地脉与自然学院", Teacher: "钟离", Credits: 4, Description: "沿着地脉、山海与遗迹，练习用田野调查读懂一片土地。", Capacity: 45, Type: "required", Term: "2026-秋"},
 		&Course{ID: "cgu-mondstadt-210", Code: "MUS210", NameZh: "风之诗与文化记忆", NameEn: "Songs of Wind & Cultural Memory", Department: "人文与艺术学院", Teacher: "温迪", Credits: 3, Description: "以民谣、诗歌和城市记忆为线索，研究文化如何被传唱。", Capacity: 50, Type: "elective", Term: "2026-秋"},
 		&Course{ID: "cgu-adventure-301", Code: "ADV301", NameZh: "冒险实践与团队协作", NameEn: "Adventure Practice & Teamwork", Department: "冒险实践学院", Teacher: "凯瑟琳", Credits: 2, Description: "把风险评估、路线规划与可靠的伙伴关系带进真实任务。", Capacity: 35, Type: "elective", Term: "2026-秋"},
+		&Course{ID: "cgu-fontaine-310", Code: "FON310", NameZh: "审判与机械文明", NameEn: "Judgment & Mechanical Civilization", Department: "枫丹法政与工程学院", Teacher: "那维莱特", Credits: 4, Description: "从水之国的法庭与工坊，研究规则、能源与机械创造。", Capacity: 40, Type: "required", Term: "2026-秋"},
+		&Course{ID: "cgu-natlan-220", Code: "NAT220", NameZh: "火与竞技生态", NameEn: "Fire & Competitive Ecology", Department: "纳塔田野与竞技学院", Teacher: "教务联合授课", Credits: 3, Description: "在部族、仪式与竞技场之间，完成一场尊重当地知识的田野研究。", Capacity: 36, Type: "elective", Term: "2026-秋"},
+		&Course{ID: "cgu-snezhnaya-401", Code: "SNE401", NameZh: "至冬研究与极地治理", NameEn: "Snezhnaya Studies & Polar Governance", Department: "至冬与极地研究学院", Teacher: "教务联合授课", Credits: 4, Description: "以 7.0「无神怜爱的雪国」为新起点，研究冰原社会、风险与远行伦理。", Capacity: 32, Type: "elective", Term: "2026-秋"},
 	)
 	s.enrollments = append(s.enrollments, &Enrollment{ID: "enrollment-elements-101", StudentID: "student", CourseID: "cgu-elements-101", Term: "2026-秋", Status: "enrolled"})
 	s.grades = append(s.grades,
@@ -1327,6 +1491,7 @@ func (s *Store) seed() {
 	s.announcements = append(s.announcements,
 		&Announcement{ID: "announcement-welcome", TitleZh: "2026 秋季学期报到安排", TitleEn: "Autumn 2026 arrival schedule", ContentZh: "风之庭院将于 9 月 1 日开放报到，旅行者请携带录取确认函。", ContentEn: "Windrise Court opens on 1 September. Bring your admission confirmation.", Type: "ADMISSIONS", Audience: "all", PublishedAt: "2026-08-20T09:00:00Z", Published: true, Author: "admin"},
 		&Announcement{ID: "announcement-enrollment", TitleZh: "选课周提醒", TitleEn: "Course selection week reminder", ContentZh: "学生门户将在 8 月 26 日 09:00 开放选课，请提前确认课表。", ContentEn: "Course selection opens at 09:00 on 26 August. Review your schedule first.", Type: "ACADEMICS", Audience: "student", PublishedAt: "2026-08-22T09:00:00Z", Published: true, Author: "admin"},
+		&Announcement{ID: "announcement-snezhnaya-70", TitleZh: "7.0「无神怜爱的雪国」：至冬研究方向开放", TitleEn: "Version 7.0 “Everwinter Without Mercy”: Snezhnaya studies open", ContentZh: "根据原神官方 7.0 版本资讯，至冬成为新的旅途舞台。CGU 新增至冬研究与极地治理课程，官网同步提供官方新闻入口。", ContentEn: "Following the official Version 7.0 update, Snezhnaya is now the next stage of the journey. CGU adds a Snezhnaya studies track and links to the official news source.", Type: "WORLD_UPDATE", Audience: "all", PublishedAt: "2026-08-24T08:00:00+08:00", Published: true, Author: "admin"},
 	)
 }
 
@@ -1335,6 +1500,9 @@ func main() {
 	addr := cfg.Server.Address
 	if !strings.Contains(addr, ":") {
 		addr = ":" + addr
+	}
+	if !isLoopbackListenAddress(addr) && cfg.AdminPassword == "admin-demo" {
+		log.Fatal("refusing non-loopback listener with the default administrator password; set CGU_ADMIN_PASSWORD")
 	}
 	store := NewStoreWithPasswords(cfg.StudentPassword, cfg.AdminPassword)
 	storageMode := "memory"
@@ -1358,9 +1526,10 @@ func main() {
 		defer database.Close()
 	}
 	handler := NewServer(store, cfg.StaticDir)
-	handler.cookieSecure = cfg.CookieSecure || handler.cookieSecure
+	// LoadConfig already applies environment, .env, and config.json precedence.
+	handler.cookieSecure = cfg.CookieSecure
 	handler.setStorageMode(storageMode)
-	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	log.Printf("CGU Go service listening on http://%s", addr)
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.ListenAndServe() }()
@@ -1378,4 +1547,17 @@ func main() {
 			log.Printf("CGU shutdown warning: %v", err)
 		}
 	}
+}
+
+func isLoopbackListenAddress(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

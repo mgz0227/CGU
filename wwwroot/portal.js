@@ -9,7 +9,6 @@
     apply: () => {}
   };
   const API_BASE = String(window.CGU_CONFIG?.apiBase || '/api').replace(/\/$/, '');
-  const TOKEN_KEY = 'cgu_access_token';
   const USER_KEY = 'cgu_user';
   const DEMO_KEY = 'cgu_demo_mode';
 
@@ -18,7 +17,10 @@
     { id: 'contract-204', code: 'CGU-C204', nameZh: '契约与商业文明', nameEn: 'Contracts & Commerce', teacher: '凝光 / Ningguang', credits: 3, term: '2026 秋季', type: 'required', capacity: 60, enrolledCount: 60, enrolled: false, description: '从港口出发，理解秩序、交换与信任。' },
     { id: 'eternity-110', code: 'CGU-E110', nameZh: '永恒与设计实践', nameEn: 'Eternity & Design Practice', teacher: '神里绫华 / Ayaka', credits: 3, term: '2026 秋季', type: 'elective', capacity: 45, enrolledCount: 29, enrolled: false, description: '在变化中寻找稳定，在限制中创造新意。' },
     { id: 'wisdom-301', code: 'CGU-W301', nameZh: '智慧与生命研究', nameEn: 'Wisdom & Life Studies', teacher: '纳西妲 / Nahida', credits: 4, term: '2027 春季', type: 'elective', capacity: 40, enrolledCount: 18, enrolled: false, description: '让知识走出终端，回到真实的生命现场。' },
-    { id: 'stars-220', code: 'CGU-S220', nameZh: '星象观测与测绘', nameEn: 'Astral Cartography', teacher: '莫娜 / Mona', credits: 3, term: '2026 秋季', type: 'elective', capacity: 30, enrolledCount: 17, enrolled: false, description: '用星图记录每一条尚未抵达的路线。' }
+    { id: 'stars-220', code: 'CGU-S220', nameZh: '星象观测与测绘', nameEn: 'Astral Cartography', teacher: '莫娜 / Mona', credits: 3, term: '2026 秋季', type: 'elective', capacity: 30, enrolledCount: 17, enrolled: false, description: '用星图记录每一条尚未抵达的路线。' },
+    { id: 'fontaine-310', code: 'CGU-F310', nameZh: '审判与机械文明', nameEn: 'Judgment & Mechanical Civilization', teacher: '那维莱特 / Neuvillette', credits: 4, term: '2026 秋季', type: 'required', capacity: 40, enrolledCount: 21, enrolled: false, description: '从法庭与工坊，研究规则、能源与机械创造。' },
+    { id: 'natlan-220', code: 'CGU-N220', nameZh: '火与竞技生态', nameEn: 'Fire & Competitive Ecology', teacher: '教务联合授课', credits: 3, term: '2026 秋季', type: 'elective', capacity: 36, enrolledCount: 16, enrolled: false, description: '在部族、仪式与竞技场之间完成田野研究。' },
+    { id: 'snezhnaya-401', code: 'CGU-S401', nameZh: '至冬研究与极地治理', nameEn: 'Snezhnaya Studies & Polar Governance', teacher: '教务联合授课', credits: 4, term: '2026 秋季', type: 'elective', capacity: 32, enrolledCount: 12, enrolled: false, description: '以 7.0「无神怜爱的雪国」为起点，研究冰原社会与远行伦理。' }
   ];
   const demoGrades = [
     { id: 'g1', courseId: 'wind-101', courseCode: 'CGU-W101', courseNameZh: '风与自然科学', courseNameEn: 'Wind & Natural Sciences', score: 92, point: 4, term: '2026 春季', status: 'passed', credits: 4 },
@@ -34,7 +36,8 @@
   const demoAnnouncements = [
     { id: 'a1', type: 'ADMISSIONS', titleZh: '2026 秋季选课窗口开放', titleEn: 'Autumn 2026 course selection is open', contentZh: '请在 9 月 12 日前完成课程确认，冲突课程将由教务处统一复核。', contentEn: 'Confirm your courses by 12 September. Conflicts will be reviewed by the registrar.', publishedAt: '2026-08-18T09:00:00+08:00', published: true },
     { id: 'a2', type: 'CAMPUS', titleZh: '风之庭院夜间自习区开放', titleEn: 'Windrise evening study hall is open', contentZh: '蒙德校区图书馆一层延长开放至 23:00，请携带学生证入场。', contentEn: 'The Mondstadt library first floor is open until 23:00. Bring your student card.', publishedAt: '2026-08-05T10:00:00+08:00', published: true },
-    { id: 'a3', type: 'RESEARCH', titleZh: '「元素与城市」研究招募', titleEn: 'Element & City research call', contentZh: '跨学院研究团队正在招募对城市、能源与文化感兴趣的学生。', contentEn: 'The interdisciplinary team welcomes students interested in cities, energy, and culture.', publishedAt: '2026-07-24T14:30:00+08:00', published: true }
+    { id: 'a3', type: 'RESEARCH', titleZh: '「元素与城市」研究招募', titleEn: 'Element & City research call', contentZh: '跨学院研究团队正在招募对城市、能源与文化感兴趣的学生。', contentEn: 'The interdisciplinary team welcomes students interested in cities, energy, and culture.', publishedAt: '2026-07-24T14:30:00+08:00', published: true },
+    { id: 'a4', type: 'WORLD_UPDATE', titleZh: '7.0「无神怜爱的雪国」：至冬研究方向开放', titleEn: 'Version 7.0 “Everwinter Without Mercy”: Snezhnaya studies open', contentZh: '根据原神官方 7.0 版本资讯，CGU 新增至冬研究与极地治理课程。', contentEn: 'Following the official Version 7.0 update, CGU adds a Snezhnaya studies track.', publishedAt: '2026-08-24T08:00:00+08:00', published: true }
   ];
 
   const state = {
@@ -75,13 +78,10 @@
   const readUser = () => {
     try { return JSON.parse(readStorage(USER_KEY) || 'null'); } catch { return null; }
   };
-  const clearSession = () => { writeStorage(TOKEN_KEY, ''); writeStorage(USER_KEY, ''); writeStorage(DEMO_KEY, ''); };
+  const clearSession = () => { writeStorage(USER_KEY, ''); writeStorage(DEMO_KEY, ''); };
 
   const jsonHeaders = () => {
-    const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
-    const token = readStorage(TOKEN_KEY);
-    if (token) headers.Authorization = `Bearer ${token}`;
-    return headers;
+    return { Accept: 'application/json', 'Content-Type': 'application/json', 'X-CGU-Request': '1' };
   };
 
   const api = async (path, options = {}) => {
@@ -279,8 +279,6 @@
         const result = await postJSON('/auth/login', 'POST', { username: values.username.trim(), password: values.password });
         const payload = result?.user ? result : (result?.account ? { user: result.account, ...result } : { user: result });
         const user = normalizeUser(payload.user || {});
-        const token = payload.accessToken || payload.access_token || payload.token || '';
-        if (token) writeStorage(TOKEN_KEY, token);
         state.user = user;
         state.demo = false;
         writeStorage(DEMO_KEY, '');
@@ -303,7 +301,7 @@
       }
     });
     const existing = readUser();
-    if (existing && (readStorage(TOKEN_KEY) || readStorage(DEMO_KEY))) {
+    if (existing || readStorage(DEMO_KEY)) {
       apiAny(['/auth/me', '/me']).then((value) => { const user = normalizeUser(value); saveUser(user); redirectAfterLogin(user); }).catch((error) => {
         if (readStorage(DEMO_KEY) && error.network) redirectAfterLogin(normalizeUser(existing));
         else if (isAuthError(error)) clearSession();
@@ -381,6 +379,11 @@
     .map((item) => item.courseId ?? item.course_id ?? item.courseCode ?? item.code));
   const courseIsEnrolled = (course) => Boolean(course.enrolled) || enrollmentIds().has(course.id) || enrollmentIds().has(course.code);
   const courseLabel = (course) => localeValue({ zh: course.nameZh ?? course.courseNameZh, en: course.nameEn ?? course.courseNameEn }, course.code ?? course.courseCode);
+  const courseSecondaryLabel = (course) => {
+    const primary = courseLabel(course);
+    const secondary = I18N.locale === 'zh' ? (course.nameEn ?? course.courseNameEn) : (course.nameZh ?? course.courseNameZh);
+    return secondary && secondary !== primary ? `<small class="course-name">${escapeHTML(secondary)}</small>` : '';
+  };
   const announcementTitle = (item) => localeValue({ zh: item.titleZh, en: item.titleEn }, '—');
   const announcementContent = (item) => localeValue({ zh: item.contentZh, en: item.contentEn }, '');
   const dayLabel = (day) => I18N.t(['', 'portal.mon', 'portal.tue', 'portal.wed', 'portal.thu', 'portal.fri', 'portal.sat', 'portal.sun'][day] || 'portal.mon');
@@ -608,7 +611,7 @@
     document.querySelectorAll('[data-admin-metric="students"]').forEach((node) => { node.textContent = stats.students ?? state.user?.studentCount ?? state.user?.stats?.students ?? '—'; });
     document.querySelectorAll('[data-admin-metric="pending"]').forEach((node) => { node.textContent = stats.pending ?? state.adminAnnouncements.filter((item) => !item.published).length; });
     const courseList = document.querySelector('[data-admin-course-list]');
-    if (courseList) courseList.innerHTML = state.adminCourses.length ? state.adminCourses.map((course) => `<tr><td>${escapeHTML(course.code)}</td><td><span class="course-name">${escapeHTML(courseLabel(course))}</span><small class="course-name">${escapeHTML(course.nameEn)}</small></td><td>${escapeHTML(course.teacher)}</td><td>${escapeHTML(course.credits)}</td><td>${escapeHTML(course.term)}</td><td>${escapeHTML(course.enrolledCount)}/${escapeHTML(course.capacity || '—')}</td><td><button class="table-action" type="button" data-edit-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></td></tr>`).join('') : `<tr><td colspan="7" class="empty-state">${escapeHTML(I18N.t('admin.noCourses'))}</td></tr>`;
+    if (courseList) courseList.innerHTML = state.adminCourses.length ? state.adminCourses.map((course) => `<tr><td>${escapeHTML(course.code)}</td><td><span class="course-name">${escapeHTML(courseLabel(course))}</span>${courseSecondaryLabel(course)}</td><td>${escapeHTML(course.teacher)}</td><td>${escapeHTML(course.credits)}</td><td>${escapeHTML(course.term)}</td><td>${escapeHTML(course.enrolledCount)}/${escapeHTML(course.capacity || '—')}</td><td><button class="table-action" type="button" data-edit-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></td></tr>`).join('') : `<tr><td colspan="7" class="empty-state">${escapeHTML(I18N.t('admin.noCourses'))}</td></tr>`;
     const announcementList = document.querySelector('[data-admin-announcement-list]');
     if (announcementList) announcementList.innerHTML = state.adminAnnouncements.length ? state.adminAnnouncements.map((item) => `<article class="admin-announcement-row"><div><span class="announcement-type">${escapeHTML(item.type)}</span><h3>${escapeHTML(announcementTitle(item))}</h3><p>${escapeHTML(announcementContent(item))}</p></div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.publishedAt, true))}</div><div class="admin-actions"><span class="status-pill${item.published ? '' : ' is-full'}">${escapeHTML(item.published ? I18N.t('admin.publish') : I18N.t('admin.unpublish'))}</span><button class="table-action" type="button" data-edit-announcement="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-announcement="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></div></article>`).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noAnnouncements'))}</p>`;
     I18N.apply();

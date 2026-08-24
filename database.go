@@ -152,13 +152,12 @@ func (s *Store) attachDatabase(db *sql.DB) error {
 }
 
 func (s *Store) ensureDatabaseSeedLocked(ctx context.Context) error {
-	var count int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_users").Scan(&count); err != nil {
-		return err
-	}
-	if count == 0 {
-		for _, user := range s.users {
-			if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, user.ID, user.Username, user.Name, user.Email, user.Role, user.PasswordHash, user.StudentID, user.College, user.Year); err != nil {
+	for _, user := range s.users {
+		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, user.ID, user.Username, user.Name, user.Email, user.Role, user.PasswordHash, user.StudentID, user.College, user.Year); err != nil {
+			return err
+		}
+		if (user.ID == "admin" && s.adminPasswordOverride) || (user.ID == "student" && s.studentPasswordOverride) {
+			if _, err := s.db.ExecContext(ctx, `UPDATE cgu_users SET password_hash = ? WHERE id = ?`, user.PasswordHash, user.ID); err != nil {
 				return err
 			}
 		}
@@ -179,15 +178,8 @@ func (s *Store) ensureDatabaseSeedLocked(ctx context.Context) error {
 }
 
 func (s *Store) seedCoursesLocked(ctx context.Context) error {
-	var count int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_courses").Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
 	for _, item := range s.courses {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_courses (id, code, name_zh, name_en, department, teacher, credits, description, capacity, course_type, term_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.Code, item.NameZh, item.NameEn, item.Department, item.Teacher, item.Credits, item.Description, item.Capacity, item.Type, item.Term); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_courses (id, code, name_zh, name_en, department, teacher, credits, description, capacity, course_type, term_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.Code, item.NameZh, item.NameEn, item.Department, item.Teacher, item.Credits, item.Description, item.Capacity, item.Type, item.Term); err != nil {
 			return err
 		}
 	}
@@ -195,15 +187,8 @@ func (s *Store) seedCoursesLocked(ctx context.Context) error {
 }
 
 func (s *Store) seedEnrollmentsLocked(ctx context.Context) error {
-	var count int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_enrollments").Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
 	for _, item := range s.enrollments {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_enrollments (id, student_id, course_id, term_name, status_name) VALUES (?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.Term, item.Status); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_enrollments (id, student_id, course_id, term_name, status_name) VALUES (?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.Term, item.Status); err != nil {
 			return err
 		}
 	}
@@ -211,15 +196,8 @@ func (s *Store) seedEnrollmentsLocked(ctx context.Context) error {
 }
 
 func (s *Store) seedGradesLocked(ctx context.Context) error {
-	var count int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_grades").Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
 	for _, item := range s.grades {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_grades (id, student_id, course_id, course_code, course_name_zh, course_name_en, score_text, point_text, term_name, status_name, credits) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.CourseCode, item.CourseNameZh, item.CourseNameEn, fmt.Sprint(item.Score), fmt.Sprint(item.Point), item.Term, item.Status, item.Credits); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_grades (id, student_id, course_id, course_code, course_name_zh, course_name_en, score_text, point_text, term_name, status_name, credits) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.CourseCode, item.CourseNameZh, item.CourseNameEn, fmt.Sprint(item.Score), fmt.Sprint(item.Point), item.Term, item.Status, item.Credits); err != nil {
 			return err
 		}
 	}
@@ -227,15 +205,8 @@ func (s *Store) seedGradesLocked(ctx context.Context) error {
 }
 
 func (s *Store) seedScheduleLocked(ctx context.Context) error {
-	var count int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_schedule").Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
 	for _, item := range s.schedule {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_schedule (id, student_id, course_id, course_code, course_name_zh, course_name_en, day_number, start_time, end_time, location_name, teacher) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.CourseCode, item.CourseNameZh, item.CourseNameEn, item.Day, item.Start, item.End, item.Location, item.Teacher); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_schedule (id, student_id, course_id, course_code, course_name_zh, course_name_en, day_number, start_time, end_time, location_name, teacher) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.CourseCode, item.CourseNameZh, item.CourseNameEn, item.Day, item.Start, item.End, item.Location, item.Teacher); err != nil {
 			return err
 		}
 	}
@@ -243,15 +214,8 @@ func (s *Store) seedScheduleLocked(ctx context.Context) error {
 }
 
 func (s *Store) seedAnnouncementsLocked(ctx context.Context) error {
-	var count int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cgu_announcements").Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
 	for _, item := range s.announcements {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_announcements (id, title_zh, title_en, content_zh, content_en, type_name, audience_name, course_id, published_at, published_flag, author_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.TitleZh, item.TitleEn, item.ContentZh, item.ContentEn, item.Type, item.Audience, item.CourseID, item.PublishedAt, item.Published, item.Author); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_announcements (id, title_zh, title_en, content_zh, content_en, type_name, audience_name, course_id, published_at, published_flag, author_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.TitleZh, item.TitleEn, item.ContentZh, item.ContentEn, item.Type, item.Audience, item.CourseID, item.PublishedAt, item.Published, item.Author); err != nil {
 			return err
 		}
 	}
@@ -406,6 +370,18 @@ func (s *Store) persistEnrollmentLocked(item *Enrollment) {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_enrollments (id, student_id, course_id, term_name, status_name) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status_name=VALUES(status_name), term_name=VALUES(term_name)`, item.ID, item.StudentID, item.CourseID, item.Term, item.Status)
 	if err != nil {
 		log.Printf("CGU database write warning (enrollment): %v", err)
+	}
+}
+
+func (s *Store) persistUserLocked(item *User) {
+	if s.db == nil || item == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE password_hash=VALUES(password_hash), name_text=VALUES(name_text), email=VALUES(email), role_name=VALUES(role_name), student_id=VALUES(student_id), college=VALUES(college), year_text=VALUES(year_text)`, item.ID, item.Username, item.Name, item.Email, item.Role, item.PasswordHash, item.StudentID, item.College, item.Year)
+	if err != nil {
+		log.Printf("CGU database write warning (user hash upgrade): %v", err)
 	}
 }
 
