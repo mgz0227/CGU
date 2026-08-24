@@ -2,6 +2,8 @@
 
 CGU（China Genshin University，原神大学）是一套使用 Go `net/http` 构建的校园网站，包含公开首页、登录入口、学生教务门户和管理员后台。Go 服务编译为单个可部署二进制，MySQL 是可选的持久化存储。
 
+前端静态资源位于 Go 项目惯用的 `web/` 目录；可通过 `CGU_STATIC_DIR` 或配置文件中的 `staticDir` 指向自定义目录。
+
 这是一个非官方的同人校园项目，与 HoYoverse 或《原神》官方没有隶属关系。官网文案会引用并概括官方公开资讯，不代表官方立场。
 
 ## 本地运行
@@ -48,9 +50,9 @@ go run .
 ## 页面与接口
 
 - `/`：CGU 招生首页，支持中文/英文切换和申请意向表单
-- `/login.html`：Cookie 会话登录
-- `/portal.html`：课程搜索、选课/退选、成绩、课表、公告和个人资料
-- `/admin.html`：课程与公告的新增、编辑、删除，以及教务统计
+- `/login`：Cookie 会话登录（旧 `/login.html` 地址仍兼容）
+- `/portal`：课程搜索、选课/退选、成绩、课表、公告和个人资料（旧 `/portal.html` 地址仍兼容）
+- `/admin`：课程与公告的新增、编辑、删除，以及教务统计（旧 `/admin.html` 地址仍兼容）
 - `/api/auth/*`：登录、退出和当前用户
 - `/api/courses`、`/api/enrollments`、`/api/grades`、`/api/schedule`、`/api/announcements`：教务数据
 - `/api/admin/*`：管理员统计与 CRUD 接口

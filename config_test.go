@@ -52,3 +52,14 @@ func TestLoadConfigPrecedenceAndExplicitDatabaseDisable(t *testing.T) {
 		t.Fatal("process environment should override config and dotenv")
 	}
 }
+
+func TestDefaultStaticDirectory(t *testing.T) {
+	cfg := defaultConfig()
+	if cfg.StaticDir != "web" {
+		t.Fatalf("default static directory = %q, want web", cfg.StaticDir)
+	}
+	server := NewServer(NewStore(), "")
+	if server.staticDir != "web" {
+		t.Fatalf("empty static directory = %q, want web", server.staticDir)
+	}
+}

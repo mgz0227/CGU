@@ -3,7 +3,7 @@
 Audit date: 2026-08-24
 
 Scope: Go HTTP service, cookie authentication, MySQL adapter, and browser
-client code in `wwwroot/`. The audit follows the repository's Go and web
+client code in `web/`. The audit follows the repository's Go and web
 security checklist. No production secret is stored in this report.
 
 ## Executive summary
@@ -82,7 +82,7 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
 
 ### GO-CSRF-001: state-changing browser requests (High, fixed)
 
-- Location: `ServeHTTP`, `originAllowed`, and `wwwroot/portal.js`.
+- Location: `ServeHTTP`, `originAllowed`, and `web/portal.js`.
 - Evidence: POST/PUT/PATCH/DELETE API requests require both an allowed Origin
   (when supplied) and `X-CGU-Request: 1`; CORS allows only the explicit
   same-origin contract and the cookie is `HttpOnly`, `SameSite=Lax`.
@@ -106,7 +106,7 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
 
 ### JS-AUTH-001: token persistence (High, fixed)
 
-- Location: `wwwroot/portal.js`.
+- Location: `web/portal.js`.
 - Evidence: the client no longer writes or reads access tokens from
   `localStorage`; authentication is the `HttpOnly` session cookie.
 - Impact: a client-side injection cannot directly read a persisted bearer

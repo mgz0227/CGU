@@ -727,6 +727,9 @@ type loginAttempt struct {
 }
 
 func NewServer(store *Store, staticDir string) *Server {
+	if strings.TrimSpace(staticDir) == "" {
+		staticDir = "web"
+	}
 	secure := strings.EqualFold(os.Getenv("CGU_COOKIE_SECURE"), "1") || strings.EqualFold(os.Getenv("CGU_COOKIE_SECURE"), "true")
 	return &Server{store: store, staticDir: staticDir, sessions: make(map[string]session), loginAttempts: make(map[string]*loginAttempt), cookieSecure: secure, storageMode: "memory"}
 }
@@ -1293,22 +1296,17 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
-	if r.URL.Path == "/login" {
-		http.Redirect(w, r, "/login.html", http.StatusFound)
-		return
-	}
-	if r.URL.Path == "/portal" {
-		http.Redirect(w, r, "/portal.html", http.StatusFound)
-		return
-	}
-	if r.URL.Path == "/admin" {
-		http.Redirect(w, r, "/admin.html", http.StatusFound)
-		return
-	}
 	clean := path.Clean("/" + strings.TrimPrefix(r.URL.Path, "/"))
 	relative := strings.TrimPrefix(clean, "/")
-	if relative == "" {
+	switch relative {
+	case "":
 		relative = "index.html"
+	case "login":
+		relative = "login.html"
+	case "portal":
+		relative = "portal.html"
+	case "admin":
+		relative = "admin.html"
 	}
 	root, err := filepath.Abs(s.staticDir)
 	if err != nil {
@@ -1322,7 +1320,8 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if info, statErr := os.Stat(candidate); statErr != nil || info.IsDir() {
-		candidate = filepath.Join(root, "index.html")
+		http.NotFound(w, r)
+		return
 	}
 	http.ServeFile(w, r, candidate)
 }

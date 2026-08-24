@@ -245,13 +245,13 @@
 
   const redirectToLogin = () => {
     clearSession();
-    const target = `${window.location.pathname.split('/').pop() || 'portal.html'}${window.location.hash}`;
-    window.location.href = `login.html?next=${encodeURIComponent(target)}`;
+    const target = `${window.location.pathname || '/portal'}${window.location.hash}`;
+    window.location.href = `/login?next=${encodeURIComponent(target)}`;
   };
   const redirectAfterLogin = (user) => {
     const next = new URLSearchParams(window.location.search).get('next');
-    if (next && /^(portal|admin)\.html(?:#.*)?$/.test(next)) window.location.href = next;
-    else window.location.href = user.role === 'admin' ? 'admin.html' : 'portal.html';
+    if (next && /^\/(portal|admin)(?:#.*)?$/.test(next)) window.location.href = next;
+    else window.location.href = user.role === 'admin' ? '/admin' : '/portal';
   };
 
   const setButtonLoading = (button, loading, labelKey) => {
@@ -324,11 +324,11 @@
     }
     if (requiredRole === 'admin' && state.user.role !== 'admin') {
       showPageAlert(I18N.t('admin.accessDenied'));
-      window.setTimeout(() => { window.location.href = 'portal.html'; }, 1000);
+      window.setTimeout(() => { window.location.href = '/portal'; }, 1000);
       return false;
     }
     if (requiredRole === 'student' && state.user.role === 'admin') {
-      window.location.href = 'admin.html';
+      window.location.href = '/admin';
       return false;
     }
     document.querySelectorAll('[data-user-name]').forEach((node) => { node.textContent = state.user.name || state.user.username; });
@@ -341,7 +341,7 @@
       if (!window.confirm(I18N.t('portal.signOutConfirm'))) return;
       try { if (!state.demo) await apiAny(['/auth/logout', '/logout'], { method: 'POST', body: '{}' }); } catch { /* local session is still cleared */ }
       clearSession();
-      window.location.href = 'login.html';
+      window.location.href = '/login';
     }));
     document.querySelectorAll('[data-mobile-nav-toggle]').forEach((button) => {
       const menu = document.getElementById(button.getAttribute('aria-controls'));

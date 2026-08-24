@@ -16,7 +16,7 @@
     "maxOpenConns": 10,
     "maxIdleConns": 5
   },
-  "staticDir": "wwwroot",
+  "staticDir": "web",
   "cookieSecure": false,
   "studentPassword": "student-demo",
   "adminPassword": "admin-demo"

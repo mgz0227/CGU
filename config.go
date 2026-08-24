@@ -42,7 +42,7 @@ func defaultConfig() AppConfig {
 	return AppConfig{
 		Server:          ServerConfig{Address: "127.0.0.1:8000", Host: "127.0.0.1", Port: 8000},
 		Database:        DatabaseConfig{Driver: "mysql", Host: "127.0.0.1", Port: 3306, Name: "cgu", MaxOpenConns: 10, MaxIdleConns: 5},
-		StaticDir:       "wwwroot",
+		StaticDir:       "web",
 		StudentPassword: "student-demo",
 		AdminPassword:   "admin-demo",
 	}

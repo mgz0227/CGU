@@ -11,7 +11,7 @@ import (
 )
 
 func TestAcademicHTTPFlow(t *testing.T) {
-	server := httptest.NewServer(NewServer(NewStore(), "wwwroot"))
+	server := httptest.NewServer(NewServer(NewStore(), "web"))
 	defer server.Close()
 	jar, err := cookiejar.New(nil)
 	if err != nil {
@@ -153,7 +153,7 @@ func TestAcademicHTTPFlow(t *testing.T) {
 }
 
 func TestSecurityGuards(t *testing.T) {
-	server := httptest.NewServer(NewServer(NewStore(), "wwwroot"))
+	server := httptest.NewServer(NewServer(NewStore(), "web"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/")
@@ -202,6 +202,30 @@ func TestSecurityGuards(t *testing.T) {
 	if !strings.HasPrefix(hashPassword("test-password"), "bcrypt$") || !verifyPassword("test-password", hashPassword("test-password")) {
 		t.Fatal("bcrypt password hashing/verification failed")
 	}
+}
+
+func TestStaticRoutes(t *testing.T) {
+	server := httptest.NewServer(NewServer(NewStore(), "web"))
+	defer server.Close()
+
+	for _, route := range []string{"/", "/login", "/portal", "/admin", "/login.html", "/portal.html", "/admin.html"} {
+		response, err := http.Get(server.URL + route)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("static route %s status = %d", route, response.StatusCode)
+		}
+		response.Body.Close()
+	}
+	response, err := http.Get(server.URL + "/does-not-exist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown static route status = %d", response.StatusCode)
+	}
+	response.Body.Close()
 }
 
 func TestLoopbackListenerDetection(t *testing.T) {
