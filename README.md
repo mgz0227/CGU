@@ -16,14 +16,20 @@ go run .
 
 打开 <http://127.0.0.1:8000/>。
 
-## 演示账号
+## 首次启动与管理员
 
-| 角色 | 账号 | 默认密码 |
-| --- | --- | --- |
-| 学生 | `student` | `student-demo` |
-| 教务管理员 | `admin` | `admin-demo` |
+CGU 不包含公开的预置账号，也不会在浏览器端伪造登录。启动前必须在私有 `config.json` 或受保护的环境变量中设置唯一的引导管理员密码；密码至少 12 个字符，未配置时服务会拒绝监听端口。管理员用户名可通过 `adminUsername` 或 `CGU_ADMIN_USERNAME` 修改，默认用户名为 `admin`。
 
-启动前可以用 `CGU_STUDENT_PASSWORD` 和 `CGU_ADMIN_PASSWORD` 环境变量覆盖默认密码；自定义值会同步更新 MySQL 中的固定演示账号。用 `CGU_ADDR=0.0.0.0:8000` 修改监听地址时必须先设置非默认的 `CGU_ADMIN_PASSWORD`，否则服务会拒绝启动。浏览器首次访问时会依据 `navigator.languages` 自动选择中文或英文，手动切换结果保存在浏览器本地。
+示例配置（请复制为未纳入版本控制的 `config.json`，再填入自己的随机密码）：
+
+```json
+{
+  "adminUsername": "admin",
+  "adminPassword": "请替换为至少 12 个字符的随机密码"
+}
+```
+
+每次启动都会将该配置同步为数据库中 `id=admin` 的引导管理员密码，便于轮换；历史版本创建的固定学生账号及其种子教务记录会在数据库迁移时删除。浏览器首次访问时会依据 `navigator.languages` 自动选择中文或英文，手动切换结果保存在浏览器本地。
 
 ### 世界观内容同步
 
@@ -31,7 +37,7 @@ go run .
 
 ### MySQL 持久化（可选）
 
-默认使用内存演示数据。配置 `CGU_DB_ENABLED=true` 以及以下环境变量后，服务会自动创建表、写入首批演示数据并在启动时加载：
+默认使用内存数据。配置 `CGU_DB_ENABLED=true` 以及以下环境变量后，服务会自动创建表、写入课程和公告初始数据并在启动时加载：
 
 ```powershell
 $env:CGU_DB_HOST = "127.0.0.1"
@@ -52,12 +58,16 @@ go run .
 - `/`：CGU 招生首页，支持中文/英文切换和申请意向表单
 - `/login`：Cookie 会话登录（旧 `/login.html` 地址仍兼容）
 - `/portal`：课程搜索、选课/退选、成绩、课表、公告和个人资料（旧 `/portal.html` 地址仍兼容）
-- `/admin`：课程与公告的新增、编辑、删除，以及教务统计（旧 `/admin.html` 地址仍兼容）
+- `/admin`：课程、公告、教务统计，以及全站内容管理（旧 `/admin.html` 地址仍兼容）
 - `/api/auth/*`：登录、退出和当前用户
 - `/api/courses`、`/api/enrollments`、`/api/grades`、`/api/schedule`、`/api/announcements`：教务数据
 - `/api/admin/*`：管理员统计与 CRUD 接口
+- `/api/site-content`：公开读取当前语言内容覆盖
+- `/api/admin/site-content`：管理员编辑全站双语文案、日期、数字、图片地址和链接
 
-未配置 MySQL 时示例数据保存在进程内存中，服务重启后会恢复为演示数据；启用 MySQL 后首次启动会创建 `cgu_*` 表并写入缺失的种子数据。正式部署应使用 MySQL、HTTPS、反向代理和密钥管理。
+管理员后台的“网站内容”目录会汇总首页、登录页、学生门户和管理页的所有 `data-i18n` 字段，并包含首页图片和外链资源。修改后刷新前台即可生效；启用 MySQL 后内容覆盖会持久化到 `cgu_site_content`。图片资源出于 CSP 安全限制使用本站或 `images.unsplash.com` 地址，链接支持 HTTPS、邮件地址和站内锚点。
+
+未配置 MySQL 时课程、公告和内容覆盖保存在进程内存中，服务重启后会重新加载初始内容；启用 MySQL 后首次启动会创建 `cgu_*` 表并写入缺失的课程、公告和内容目录。学生资料、选课、成绩和课表应由教务管理员通过受保护的数据接口或数据库导入，正式部署应使用 MySQL、HTTPS、反向代理和密钥管理。
 
 构建检查：
 

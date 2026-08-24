@@ -13,6 +13,7 @@
       'nav.menu': '打开菜单',
       'nav.close': '关闭菜单',
       'login.pageTitle': 'CGU · 登录',
+      'login.metaDescription': 'CGU 原神大学校园访问入口',
       'login.kicker': 'CHINA GENSHIN UNIVERSITY · CAMPUS ACCESS',
       'login.title': '登录 CGU 门户',
       'login.subtitle': '进入课程、成绩与校园服务。',
@@ -26,7 +27,8 @@
       'login.errorRequired': '请输入账号和密码。',
       'login.errorInvalid': '账号或密码不正确。',
       'login.errorUnavailable': '暂时无法连接教务服务，请稍后再试。',
-      'login.demoHint': '演示账号：student / student-demo，管理员：admin / admin-demo',
+      'login.footerCopyright': '© 2026 CGU',
+      'login.footerServices': '教务服务',
       'common.skipLogin': '跳到登录表单',
       'common.skipMain': '跳到主内容',
       'common.loginPanel': '登录',
@@ -37,9 +39,15 @@
       'common.courseTypeFilter': '课程类型',
       'admin.termPlaceholder': '2026 秋季',
       'portal.pageTitle': 'CGU · 学生教务',
+      'portal.metaDescription': 'CGU 原神大学学生教务门户',
       'portal.kicker': 'STUDENT PORTAL',
+      'portal.academicsKicker': 'ACADEMICS',
+      'portal.campusKicker': 'CAMPUS LIFE',
+      'portal.accountKicker': 'ACCOUNT',
       'portal.title': '我的教务空间',
       'portal.welcome': '欢迎回来，{name}',
+      'portal.welcomeFallback': '欢迎回来',
+      'portal.noticeType': 'NOTICE',
       'portal.refresh': '刷新数据',
       'portal.overview': '概览',
       'portal.courses': '课程中心',
@@ -52,6 +60,10 @@
       'portal.enrolled': '在修课程',
       'portal.nextClass': '下一节课',
       'portal.noNextClass': '今天没有安排',
+      'portal.creditsTarget': '本科阶段目标 120',
+      'portal.gradedCourses': '{count} 门已出分',
+      'portal.currentTerm': '本学期',
+      'portal.termFallback': '2026',
       'portal.courseSearch': '搜索课程、教师或学院',
       'portal.allTerms': '全部学期',
       'portal.allTypes': '全部类型',
@@ -100,16 +112,33 @@
       'portal.operationError': '操作失败，请稍后重试。',
       'admin.kicker': 'CGU ADMINISTRATION',
       'admin.pageTitle': 'CGU · 后台管理',
+      'admin.metaDescription': 'CGU 原神大学教务管理后台',
       'admin.title': '教务管理台',
       'admin.subtitle': '维护课程、公告与校园学术信息。',
       'admin.overview': '总览',
       'admin.courses': '课程管理',
       'admin.announcements': '公告管理',
+      'admin.siteContent': '网站内容',
+      'admin.siteContentHelp': '编辑全站双语文案、图片地址与链接；保存后前台刷新即可生效。',
+      'admin.contentKey': '内容键',
+      'admin.contentKeyPlaceholder': '例如 home.heroTitleLead',
+      'admin.zhValue': '中文内容',
+      'admin.enValue': '英文内容',
+      'admin.addContent': '新增内容',
+      'admin.searchContent': '搜索键名或内容',
+      'admin.noSiteContent': '暂无可编辑内容。',
       'admin.users': '用户概览',
       'admin.totalCourses': '课程总数',
       'admin.totalStudents': '学生总数',
       'admin.openSections': '开放班级',
       'admin.pending': '待处理事项',
+      'admin.coursesUnit': 'COURSES',
+      'admin.studentsUnit': 'STUDENTS',
+      'admin.sectionsUnit': 'OPEN SECTIONS',
+      'admin.pendingUnit': 'PENDING',
+      'admin.courseQuickNumber': '01',
+      'admin.announcementQuickNumber': '02',
+      'admin.contentKicker': 'CONTENT MANAGEMENT',
       'admin.newCourse': '新增课程',
       'admin.editCourse': '编辑课程',
       'admin.newAnnouncement': '发布公告',
@@ -142,12 +171,13 @@
       'admin.deleted': '删除成功。',
       'admin.error': '请求失败，请稍后重试。',
       'admin.accessDenied': '当前账号没有管理员权限。',
+      'home.programDetailsSoon': '课程详情将在招生简章中展开。',
+      'home.applicationReceived': '申请意向已收到，招生老师会尽快与你联系。',
       'common.loading': '加载中…',
       'common.error': '出错了',
       'common.close': '关闭',
       'common.retry': '重试',
       'common.empty': '暂无数据',
-      'common.demo': '演示模式',
       'common.required': '必填'
     },
     en: {
@@ -162,6 +192,7 @@
       'nav.menu': 'Open menu',
       'nav.close': 'Close menu',
       'login.pageTitle': 'CGU · Sign in',
+      'login.metaDescription': 'China Genshin University campus access',
       'login.kicker': 'CHINA GENSHIN UNIVERSITY · CAMPUS ACCESS',
       'login.title': 'Sign in to CGU',
       'login.subtitle': 'Access courses, grades, and campus services.',
@@ -175,7 +206,8 @@
       'login.errorRequired': 'Enter your account and password.',
       'login.errorInvalid': 'The account or password is incorrect.',
       'login.errorUnavailable': 'The academic service is temporarily unavailable.',
-      'login.demoHint': 'Demo: student / student-demo, admin / admin-demo',
+      'login.footerCopyright': '© 2026 CGU',
+      'login.footerServices': 'Academic services',
       'common.skipLogin': 'Skip to sign-in form',
       'common.skipMain': 'Skip to main content',
       'common.loginPanel': 'Sign in',
@@ -186,9 +218,15 @@
       'common.courseTypeFilter': 'Course type',
       'admin.termPlaceholder': 'Autumn 2026',
       'portal.pageTitle': 'CGU · Student portal',
+      'portal.metaDescription': 'China Genshin University student portal',
       'portal.kicker': 'STUDENT PORTAL',
+      'portal.academicsKicker': 'ACADEMICS',
+      'portal.campusKicker': 'CAMPUS LIFE',
+      'portal.accountKicker': 'ACCOUNT',
       'portal.title': 'My academic space',
       'portal.welcome': 'Welcome back, {name}',
+      'portal.welcomeFallback': 'Welcome back',
+      'portal.noticeType': 'NOTICE',
       'portal.refresh': 'Refresh data',
       'portal.overview': 'Overview',
       'portal.courses': 'Course centre',
@@ -201,6 +239,10 @@
       'portal.enrolled': 'Enrolled courses',
       'portal.nextClass': 'Next class',
       'portal.noNextClass': 'No classes today',
+      'portal.creditsTarget': 'Undergraduate target 120',
+      'portal.gradedCourses': '{count} graded courses',
+      'portal.currentTerm': 'This term',
+      'portal.termFallback': '2026',
       'portal.courseSearch': 'Search courses, teachers, or colleges',
       'portal.allTerms': 'All terms',
       'portal.allTypes': 'All types',
@@ -249,16 +291,33 @@
       'portal.operationError': 'Operation failed. Try again later.',
       'admin.kicker': 'CGU ADMINISTRATION',
       'admin.pageTitle': 'CGU · Administration',
+      'admin.metaDescription': 'China Genshin University administration portal',
       'admin.title': 'Academic administration',
       'admin.subtitle': 'Maintain courses, announcements, and academic information.',
       'admin.overview': 'Overview',
       'admin.courses': 'Course management',
       'admin.announcements': 'Announcement management',
+      'admin.siteContent': 'Website content',
+      'admin.siteContentHelp': 'Edit bilingual site copy, image addresses, and links. Saved values apply after the frontend refreshes.',
+      'admin.contentKey': 'Content key',
+      'admin.contentKeyPlaceholder': 'For example home.heroTitleLead',
+      'admin.zhValue': 'Chinese content',
+      'admin.enValue': 'English content',
+      'admin.addContent': 'Add content',
+      'admin.searchContent': 'Search keys or content',
+      'admin.noSiteContent': 'No editable content yet.',
       'admin.users': 'User overview',
       'admin.totalCourses': 'Total courses',
       'admin.totalStudents': 'Students',
       'admin.openSections': 'Open sections',
       'admin.pending': 'Pending items',
+      'admin.coursesUnit': 'COURSES',
+      'admin.studentsUnit': 'STUDENTS',
+      'admin.sectionsUnit': 'OPEN SECTIONS',
+      'admin.pendingUnit': 'PENDING',
+      'admin.courseQuickNumber': '01',
+      'admin.announcementQuickNumber': '02',
+      'admin.contentKicker': 'CONTENT MANAGEMENT',
       'admin.newCourse': 'New course',
       'admin.editCourse': 'Edit course',
       'admin.newAnnouncement': 'Publish announcement',
@@ -291,12 +350,13 @@
       'admin.deleted': 'Deleted successfully.',
       'admin.error': 'Request failed. Try again later.',
       'admin.accessDenied': 'This account does not have administrator access.',
+      'home.programDetailsSoon': 'Course details will be included in the admissions guide.',
+      'home.applicationReceived': 'Application interest received. Admissions will be in touch soon.',
       'common.loading': 'Loading…',
       'common.error': 'Something went wrong',
       'common.close': 'Close',
       'common.retry': 'Retry',
       'common.empty': 'No data',
-      'common.demo': 'Demo mode',
       'common.required': 'Required'
     }
   };
@@ -334,6 +394,9 @@
     'home.statSchools': 'themed schools',
     'home.statCourses': 'exploration courses',
     'home.statJourneys': 'possible journeys',
+    'home.statSchoolsValue': '07',
+    'home.statCoursesValue': '42',
+    'home.statJourneysValue': '∞',
     'home.scroll': 'Scroll to explore',
     'home.aboutLabel': 'ABOUT CGU',
     'home.aboutKicker': 'THE UNIVERSITY OF POSSIBILITY',
@@ -411,6 +474,7 @@
     'home.footerAbout': 'About us',
     'home.footerSupport': 'Apply & support',
     'home.footerAdmissionsOffice': 'Admissions office',
+    'home.footerEmail': 'hello@cgu-university.example',
     'home.footerAddress': 'Liyue Harbor · Yujing Terrace 7',
     'home.footerHours': 'Mon–Fri 09:00–18:00',
     'home.dialogKicker': 'CGU ADMISSIONS · 2026',
@@ -423,7 +487,9 @@
     'home.formNamePlaceholder': 'Traveler name',
     'home.formEmailPlaceholder': 'name@example.com',
     'home.submitApplication': 'Send enquiry',
-    'home.formNote': 'By submitting, you agree that CGU may contact you.'
+    'home.formNote': 'By submitting, you agree that CGU may contact you.',
+    'home.programDetailsSoon': 'Course details will be included in the admissions guide.',
+    'home.applicationReceived': 'Application interest received. Admissions will be in touch soon.'
   };
 
   // Keep the shared fallback aligned with the homepage's current seven-nation copy.
@@ -450,6 +516,14 @@
     'home.programJusticeDescription': 'Study rules, energy, and invention through Fontaine’s courts and workshops.',
     'home.programFlameDescription': 'Conduct field research between tribes, rituals, and the arena.',
     'home.programPolarDescription': 'Use Version 7.0 “Everwinter Without Mercy” as a starting point for polar society and travel ethics.',
+    'home.aboutSectionNumber': '01',
+    'home.programWindNumber': '01',
+    'home.programContractNumber': '02',
+    'home.programDesignNumber': '03',
+    'home.programWisdomNumber': '04',
+    'home.programJusticeNumber': '05',
+    'home.programFlameNumber': '06',
+    'home.programPolarNumber': '07',
     'home.degreeEngineering': 'BEng',
     'home.degreeFieldwork': 'BA Fieldwork',
     'home.degreePolarStudies': 'MSc Polar Studies',
@@ -457,15 +531,42 @@
     'home.viewAllNews': 'Read official Genshin news',
     'home.featureTitle': 'Snezhnaya opening week: begin a new research journey in 7.0',
     'home.featureDescription': 'The official Version 7.0 “Everwinter Without Mercy” brings the journey to Snezhnaya; CGU now offers a matching polar studies track.',
+    'home.featureDate': '08.12',
+    'home.featureYear': '2026',
     'home.registerEvent': 'Read the official version notice',
     'home.newsSnezhnayaType': 'WORLD UPDATE',
     'home.newsSnezhnayaTitle': 'Version 7.0 “Everwinter Without Mercy”: Snezhnaya campus opens',
     'home.newsSnezhnayaDescription': 'Following the official update, Snezhnaya becomes the next stage of the journey and CGU opens a related research track.',
-    'home.newsSnezhnayaAria': 'Read the official Snezhnaya 7.0 news'
+    'home.newsSnezhnayaAria': 'Read the official Snezhnaya 7.0 news',
+    'home.newsSnezhnayaDate': '08.12',
+    'home.newsSnezhnayaYear': '2026',
+    'home.newsCampusDate': '08.05',
+    'home.newsCampusYear': '2026',
+    'home.newsResearchDate': '07.24',
+    'home.newsResearchYear': '2026'
   });
 
   const defaultText = new WeakMap();
   const defaultAttrs = new WeakMap();
+  const catalogDefaults = new Map();
+  const managedAssetDefaults = {
+    'asset.heroImage': 'https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=1800&q=85',
+    'asset.aboutImage': 'https://images.unsplash.com/photo-1511497584788-876760111969?auto=format&fit=crop&w=1000&q=85',
+    'asset.featureImage': 'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=1400&q=85',
+    'asset.programWindImage': 'https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=900&q=80',
+    'asset.programContractImage': 'https://images.unsplash.com/photo-1548013146-72479768bada?auto=format&fit=crop&w=900&q=80',
+    'asset.programDesignImage': 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=900&q=80',
+    'asset.programWisdomImage': 'https://images.unsplash.com/photo-1534447677768-be436bb09401?auto=format&fit=crop&w=900&q=80',
+    'asset.programJusticeImage': 'https://images.unsplash.com/photo-1494526585095-c41746248156?auto=format&fit=crop&w=900&q=80',
+    'asset.programFlameImage': 'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=900&q=80',
+    'asset.programPolarImage': 'https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=900&q=80',
+    'link.officialNews': 'https://genshin.hoyoverse.com/zh-tw/news',
+    'link.featureNews': 'https://genshin.hoyoverse.com/zh-tw/news',
+    'link.newsSnezhnaya': 'https://genshin.hoyoverse.com/zh-tw/news',
+    'link.newsCampus': '#contact',
+    'link.newsResearch': '#programs',
+    'link.footerEmail': 'mailto:hello@cgu-university.example'
+  };
 
   const getInitialLocale = () => {
     const saved = window.localStorage?.getItem(STORAGE_KEY);
@@ -478,6 +579,20 @@
 
   let locale = getInitialLocale();
 
+  const mergeSiteContent = (items) => {
+    (Array.isArray(items) ? items : []).forEach((item) => {
+      const key = String(item?.key || '').trim();
+      if (!key) return;
+      if (typeof item.zh === 'string' && item.zh.trim()) dictionaries.zh[key] = item.zh;
+      if (typeof item.en === 'string' && item.en.trim()) dictionaries.en[key] = item.en;
+    });
+  };
+
+  const contentReady = fetch('/api/site-content', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+    .then((response) => response.ok ? response.json() : null)
+    .then((payload) => mergeSiteContent(payload?.content || payload?.data?.content || []))
+    .catch(() => { /* Static defaults remain available when the API is offline. */ });
+
   const translate = (key, vars = {}) => {
     const value = dictionaries[locale]?.[key] ?? (locale === 'en' ? homeEnglish[key] : undefined) ?? dictionaries.zh[key] ?? key;
     return String(value).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
@@ -485,8 +600,11 @@
 
   const apply = (root = document) => {
     root.querySelectorAll?.('[data-i18n]').forEach((node) => {
-      if (!defaultText.has(node)) defaultText.set(node, node.textContent);
       const key = node.dataset.i18n;
+      if (!defaultText.has(node)) {
+        defaultText.set(node, node.textContent);
+        if (key && !catalogDefaults.has(key)) catalogDefaults.set(key, { zh: node.textContent.trim() });
+      }
       node.textContent = locale === 'zh' && !dictionaries.zh[key] ? defaultText.get(node) : translate(key);
     });
     root.querySelectorAll?.('[data-i18n-attr]').forEach((node) => {
@@ -497,6 +615,14 @@
           if (attribute) values[attribute] = node.getAttribute(attribute) || '';
         });
         defaultAttrs.set(node, values);
+        const keyValues = {};
+        node.dataset.i18nAttr.split(';').forEach((pair) => {
+          const [attribute, key] = pair.split(':').map((part) => part.trim());
+          if (attribute && key && !catalogDefaults.has(key)) {
+            catalogDefaults.set(key, { zh: values[attribute] || '' });
+          }
+          if (attribute && key) keyValues[key] = values[attribute] || '';
+        });
       }
       const pairs = node.dataset.i18nAttr.split(';').map((pair) => pair.trim()).filter(Boolean);
       pairs.forEach((pair) => {
@@ -511,6 +637,39 @@
     document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
     document.documentElement.dataset.locale = locale;
   };
+
+  const collectMarkupCatalog = (root) => {
+    root.querySelectorAll?.('[data-i18n]').forEach((node) => {
+      const key = String(node.dataset.i18n || '').trim();
+      if (key && !catalogDefaults.has(key)) catalogDefaults.set(key, { zh: String(node.textContent || '').trim() });
+    });
+    root.querySelectorAll?.('[data-i18n-attr]').forEach((node) => {
+      String(node.dataset.i18nAttr || '').split(';').forEach((pair) => {
+        const [attribute, key] = pair.split(':').map((part) => part.trim());
+        if (attribute && key && !catalogDefaults.has(key)) catalogDefaults.set(key, { zh: node.getAttribute(attribute) || '' });
+      });
+    });
+  };
+
+  const collectHomeCatalog = async () => {
+    if (document.body?.dataset.page === 'home') return;
+    try {
+      const response = await fetch('/index.html', { credentials: 'same-origin', headers: { Accept: 'text/html' } });
+      if (response.ok) collectMarkupCatalog(new DOMParser().parseFromString(await response.text(), 'text/html'));
+    } catch { /* Current page content remains available. */ }
+  };
+
+  const catalog = () => {
+    const result = new Map();
+    catalogDefaults.forEach((value, key) => result.set(key, { key, zh: value.zh || '', en: '' }));
+    Object.keys(dictionaries.zh).forEach((key) => result.set(key, { ...(result.get(key) || { key, zh: '', en: '' }), zh: dictionaries.zh[key] }));
+    Object.keys(dictionaries.en).forEach((key) => result.set(key, { ...(result.get(key) || { key, zh: '', en: '' }), en: dictionaries.en[key] }));
+    Object.keys(homeEnglish).forEach((key) => result.set(key, { ...(result.get(key) || { key, zh: '', en: '' }), en: homeEnglish[key] }));
+    Object.entries(managedAssetDefaults).forEach(([key, value]) => result.set(key, { ...(result.get(key) || { key, zh: '', en: '' }), zh: value, en: value }));
+    return [...result.values()].filter((item) => item.zh || item.en).sort((a, b) => a.key.localeCompare(b.key));
+  };
+
+  const catalogReady = contentReady.then(() => collectHomeCatalog());
 
   const setLocale = (next) => {
     locale = next === 'en' ? 'en' : 'zh';
@@ -532,10 +691,15 @@
     apply,
     setLocale,
     pick,
-    dictionaries
+    dictionaries,
+    mergeSiteContent,
+    ready: catalogReady,
+    catalog
   };
 
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
+    collectMarkupCatalog(document);
+    await catalogReady;
     apply();
     document.querySelectorAll('[data-locale-toggle]').forEach((button) => {
       button.addEventListener('click', () => setLocale(locale === 'zh' ? 'en' : 'zh'));

@@ -90,6 +90,12 @@ CREATE TABLE IF NOT EXISTS cgu_announcements (
   author_name VARCHAR(128) NOT NULL DEFAULT 'admin',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS cgu_site_content (
+  content_key VARCHAR(160) PRIMARY KEY,
+  zh_text TEXT NOT NULL,
+  en_text TEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 `
 
 func openMySQL(cfg AppConfig) (*sql.DB, error) {
@@ -152,29 +158,46 @@ func (s *Store) attachDatabase(db *sql.DB) error {
 }
 
 func (s *Store) ensureDatabaseSeedLocked(ctx context.Context) error {
-	for _, user := range s.users {
-		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, user.ID, user.Username, user.Name, user.Email, user.Role, user.PasswordHash, user.StudentID, user.College, user.Year); err != nil {
-			return err
+	// Older builds inserted a fixed student account and related academic rows.
+	// Remove the known seeded identifier and username during migration; other
+	// accounts remain untouched.
+	for _, statement := range []string{
+		`DELETE FROM cgu_enrollments WHERE student_id = 'student'`,
+		`DELETE FROM cgu_grades WHERE student_id = 'student'`,
+		`DELETE FROM cgu_schedule WHERE student_id = 'student'`,
+		`DELETE FROM cgu_users WHERE id = 'student'`,
+		`DELETE FROM cgu_enrollments WHERE student_id IN (SELECT id FROM cgu_users WHERE username = 'student')`,
+		`DELETE FROM cgu_grades WHERE student_id IN (SELECT id FROM cgu_users WHERE username = 'student')`,
+		`DELETE FROM cgu_schedule WHERE student_id IN (SELECT id FROM cgu_users WHERE username = 'student')`,
+		`DELETE FROM cgu_users WHERE username = 'student'`,
+	} {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("remove legacy account data: %w", err)
 		}
-		if (user.ID == "admin" && s.adminPasswordOverride) || (user.ID == "student" && s.studentPasswordOverride) {
-			if _, err := s.db.ExecContext(ctx, `UPDATE cgu_users SET password_hash = ? WHERE id = ?`, user.PasswordHash, user.ID); err != nil {
-				return err
-			}
-		}
+	}
+
+	admin, ok := s.users["admin"]
+	if !ok || strings.TrimSpace(admin.PasswordHash) == "" {
+		return fmt.Errorf("bootstrap administrator is not configured")
+	}
+	var conflictingID string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM cgu_users WHERE username = ? AND id <> ? LIMIT 1`, admin.Username, admin.ID).Scan(&conflictingID)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("check bootstrap administrator username: %w", err)
+	}
+	if err == nil {
+		return fmt.Errorf("bootstrap administrator username is already assigned to another account")
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE username=VALUES(username), name_text=VALUES(name_text), email=VALUES(email), role_name=VALUES(role_name), password_hash=VALUES(password_hash), student_id=VALUES(student_id), college=VALUES(college), year_text=VALUES(year_text)`, admin.ID, admin.Username, admin.Name, admin.Email, admin.Role, admin.PasswordHash, admin.StudentID, admin.College, admin.Year); err != nil {
+		return fmt.Errorf("upsert bootstrap administrator: %w", err)
 	}
 	if err := s.seedCoursesLocked(ctx); err != nil {
 		return err
 	}
-	if err := s.seedEnrollmentsLocked(ctx); err != nil {
+	if err := s.seedAnnouncementsLocked(ctx); err != nil {
 		return err
 	}
-	if err := s.seedGradesLocked(ctx); err != nil {
-		return err
-	}
-	if err := s.seedScheduleLocked(ctx); err != nil {
-		return err
-	}
-	return s.seedAnnouncementsLocked(ctx)
+	return s.seedSiteContentLocked(ctx)
 }
 
 func (s *Store) seedCoursesLocked(ctx context.Context) error {
@@ -186,36 +209,21 @@ func (s *Store) seedCoursesLocked(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) seedEnrollmentsLocked(ctx context.Context) error {
-	for _, item := range s.enrollments {
-		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_enrollments (id, student_id, course_id, term_name, status_name) VALUES (?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.Term, item.Status); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Store) seedGradesLocked(ctx context.Context) error {
-	for _, item := range s.grades {
-		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_grades (id, student_id, course_id, course_code, course_name_zh, course_name_en, score_text, point_text, term_name, status_name, credits) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.CourseCode, item.CourseNameZh, item.CourseNameEn, fmt.Sprint(item.Score), fmt.Sprint(item.Point), item.Term, item.Status, item.Credits); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Store) seedScheduleLocked(ctx context.Context) error {
-	for _, item := range s.schedule {
-		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_schedule (id, student_id, course_id, course_code, course_name_zh, course_name_en, day_number, start_time, end_time, location_name, teacher) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.StudentID, item.CourseID, item.CourseCode, item.CourseNameZh, item.CourseNameEn, item.Day, item.Start, item.End, item.Location, item.Teacher); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *Store) seedAnnouncementsLocked(ctx context.Context) error {
 	for _, item := range s.announcements {
 		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_announcements (id, title_zh, title_en, content_zh, content_en, type_name, audience_name, course_id, published_at, published_flag, author_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.TitleZh, item.TitleEn, item.ContentZh, item.ContentEn, item.Type, item.Audience, item.CourseID, item.PublishedAt, item.Published, item.Author); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) seedSiteContentLocked(ctx context.Context) error {
+	for _, item := range s.siteContent {
+		if item == nil {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_site_content (content_key, zh_text, en_text) VALUES (?, ?, ?)`, item.Key, item.Zh, item.En); err != nil {
 			return err
 		}
 	}
@@ -247,11 +255,19 @@ func (s *Store) loadDatabaseLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	siteContent, err := loadSiteContent(ctx, s.db)
+	if err != nil {
+		return err
+	}
 	for id, user := range users {
 		s.users[id] = user
 	}
 	if len(courses) > 0 {
 		s.courses = courses
+	}
+	for _, item := range siteContent {
+		copy := item
+		s.siteContent[item.Key] = &copy
 	}
 	s.enrollments, s.grades, s.schedule, s.announcements = enrollments, grades, schedule, announcements
 	return nil
@@ -361,6 +377,25 @@ func loadAnnouncements(ctx context.Context, db *sql.DB) ([]*Announcement, error)
 	return result, rows.Err()
 }
 
+func loadSiteContent(ctx context.Context, db *sql.DB) ([]SiteContent, error) {
+	rows, err := db.QueryContext(ctx, `SELECT content_key, zh_text, en_text, updated_at FROM cgu_site_content ORDER BY content_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]SiteContent, 0)
+	for rows.Next() {
+		item := SiteContent{}
+		var updated time.Time
+		if err := rows.Scan(&item.Key, &item.Zh, &item.En, &updated); err != nil {
+			return nil, err
+		}
+		item.UpdatedAt = updated.UTC().Format(time.RFC3339)
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) persistEnrollmentLocked(item *Enrollment) {
 	if s.db == nil || item == nil {
 		return
@@ -407,6 +442,16 @@ func (s *Store) persistAnnouncementLocked(item *Announcement) {
 	if err != nil {
 		log.Printf("CGU database write warning (announcement): %v", err)
 	}
+}
+
+func (s *Store) persistSiteContentLocked(item *SiteContent) error {
+	if s.db == nil || item == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_site_content (content_key, zh_text, en_text) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE zh_text=VALUES(zh_text), en_text=VALUES(en_text)`, item.Key, item.Zh, item.En)
+	return err
 }
 
 func (s *Store) deleteCoursePersistedLocked(id string) {

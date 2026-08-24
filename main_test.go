@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
@@ -10,8 +11,14 @@ import (
 	"testing"
 )
 
+const (
+	testAdminUsername = "initial-admin"
+	testAdminPassword = "test-admin-password-2026!"
+)
+
 func TestAcademicHTTPFlow(t *testing.T) {
-	server := httptest.NewServer(NewServer(NewStore(), "web"))
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	server := httptest.NewServer(NewServer(store, "web"))
 	defer server.Close()
 	jar, err := cookiejar.New(nil)
 	if err != nil {
@@ -45,31 +52,87 @@ func TestAcademicHTTPFlow(t *testing.T) {
 	}
 	response.Body.Close()
 
-	login := postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": "student", "password": "student-demo"})
-	if login.StatusCode != http.StatusOK {
-		t.Fatalf("student login status = %d", login.StatusCode)
+	unauthorizedBody, err := json.Marshal(map[string]string{"key": "home.heroTitleLead", "zh": "不应保存"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorizedRequest, err := http.NewRequest(http.MethodPut, server.URL+"/api/admin/site-content", bytes.NewReader(unauthorizedBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorizedRequest.Header.Set("Content-Type", "application/json")
+	unauthorizedRequest.Header.Set("X-CGU-Request", "1")
+	unauthorizedResponse, err := client.Do(unauthorizedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unauthorizedResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous site content update status = %d", unauthorizedResponse.StatusCode)
+	}
+	unauthorizedResponse.Body.Close()
+
+	login := postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": "student", "password": "removed-account-password"})
+	if login.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("removed student account login status = %d", login.StatusCode)
 	}
 	login.Body.Close()
 
-	for _, endpoint := range []string{"/api/auth/me", "/api/courses", "/api/enrollments", "/api/grades", "/api/schedule", "/api/announcements"} {
+	login = postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": testAdminUsername, "password": testAdminPassword})
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("administrator login status = %d", login.StatusCode)
+	}
+	login.Body.Close()
+
+	publicContent, err := client.Get(server.URL + "/api/site-content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publicContent.StatusCode != http.StatusOK {
+		t.Fatalf("public site content status = %d", publicContent.StatusCode)
+	}
+	var publicPayload struct {
+		Content []SiteContent `json:"content"`
+	}
+	if err := json.NewDecoder(publicContent.Body).Decode(&publicPayload); err != nil {
+		t.Fatal(err)
+	}
+	publicContent.Body.Close()
+	if len(publicPayload.Content) < 30 {
+		t.Fatalf("public content catalog has %d entries, want managed copy and asset entries", len(publicPayload.Content))
+	}
+
+	contentBody, err := json.Marshal(map[string]string{"key": "home.heroTitleLead", "zh": "新的中文标题", "en": "A new English title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentRequest, err := http.NewRequest(http.MethodPut, server.URL+"/api/admin/site-content", bytes.NewReader(contentBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentRequest.Header.Set("Content-Type", "application/json")
+	contentRequest.Header.Set("X-CGU-Request", "1")
+	contentResponse, err := client.Do(contentRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentResponse.StatusCode != http.StatusOK {
+		t.Fatalf("site content update status = %d", contentResponse.StatusCode)
+	}
+	contentResponse.Body.Close()
+	if got := store.siteContent["home.heroTitleLead"]; got == nil || got.Zh != "新的中文标题" || got.En != "A new English title" {
+		t.Fatalf("site content update was not stored: %#v", got)
+	}
+
+	for _, endpoint := range []string{"/api/auth/me", "/api/courses", "/api/enrollments", "/api/grades", "/api/schedule", "/api/announcements", "/api/admin/stats"} {
 		response, err = client.Get(server.URL + endpoint)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if response.StatusCode != http.StatusOK {
-			t.Fatalf("student %s status = %d", endpoint, response.StatusCode)
+			t.Fatalf("administrator %s status = %d", endpoint, response.StatusCode)
 		}
 		response.Body.Close()
 	}
-
-	response, err = client.Get(server.URL + "/api/admin/stats")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("student admin status = %d", response.StatusCode)
-	}
-	response.Body.Close()
 
 	logoutRequest, err := http.NewRequest(http.MethodPost, server.URL+"/api/auth/logout", bytes.NewReader([]byte(`{}`)))
 	if err != nil {
@@ -114,7 +177,7 @@ func TestAcademicHTTPFlow(t *testing.T) {
 	}
 	csrfResponse.Body.Close()
 
-	login = postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": "admin", "password": "admin-demo"})
+	login = postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": testAdminUsername, "password": testAdminPassword})
 	if login.StatusCode != http.StatusOK {
 		t.Fatalf("admin login status = %d", login.StatusCode)
 	}
@@ -153,7 +216,7 @@ func TestAcademicHTTPFlow(t *testing.T) {
 }
 
 func TestSecurityGuards(t *testing.T) {
-	server := httptest.NewServer(NewServer(NewStore(), "web"))
+	server := httptest.NewServer(NewServer(NewStoreWithAdmin(testAdminUsername, testAdminPassword), "web"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/")
@@ -205,7 +268,7 @@ func TestSecurityGuards(t *testing.T) {
 }
 
 func TestStaticRoutes(t *testing.T) {
-	server := httptest.NewServer(NewServer(NewStore(), "web"))
+	server := httptest.NewServer(NewServer(NewStoreWithAdmin(testAdminUsername, testAdminPassword), "web"))
 	defer server.Close()
 
 	for _, route := range []string{"/", "/login", "/portal", "/admin", "/login.html", "/portal.html", "/admin.html"} {
@@ -226,6 +289,49 @@ func TestStaticRoutes(t *testing.T) {
 		t.Fatalf("unknown static route status = %d", response.StatusCode)
 	}
 	response.Body.Close()
+}
+
+func TestStoreContainsOnlyConfiguredBootstrapAdmin(t *testing.T) {
+	store := NewStoreWithAdmin("registrar", "long-test-password-2026!")
+	if len(store.users) != 1 {
+		t.Fatalf("store contains %d users, want exactly one bootstrap administrator", len(store.users))
+	}
+	admin, ok := store.users["admin"]
+	if !ok || admin.Username != "registrar" || admin.Role != "admin" {
+		t.Fatalf("unexpected bootstrap administrator: %#v", admin)
+	}
+	if _, ok := store.users["student"]; ok {
+		t.Fatal("legacy student account must not be seeded")
+	}
+}
+
+func TestStoreWithoutPasswordContainsNoLoginAccount(t *testing.T) {
+	store := NewStoreWithAdmin("admin", "")
+	if len(store.users) != 0 {
+		t.Fatalf("empty bootstrap password created %d users", len(store.users))
+	}
+}
+
+func TestSiteContentUpdateRollsBackWhenDatabaseWriteFails(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	original := *store.siteContent["home.heroTitleLead"]
+	db, err := sql.Open("mysql", "cgu:cgu@tcp(127.0.0.1:1)/cgu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store.db = db
+
+	updated, apiError := store.updateSiteContent(SiteContentInput{Key: original.Key, Zh: "不应保存", En: "Must not persist"})
+	if updated != nil || apiError == nil || apiError.Status != http.StatusServiceUnavailable {
+		t.Fatalf("update result = %#v, error = %#v", updated, apiError)
+	}
+	got := store.siteContent[original.Key]
+	if got == nil || got.Zh != original.Zh || got.En != original.En {
+		t.Fatalf("failed database write changed in-memory content: %#v", got)
+	}
 }
 
 func TestLoopbackListenerDetection(t *testing.T) {

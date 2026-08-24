@@ -308,6 +308,35 @@
   }
   const translate = (key, vars) => sharedI18n?.t(key, vars) || homepageTranslations.zh[key] || key;
 
+  const managedURL = (value, kind) => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (kind === 'link' && /^#[A-Za-z][\w-]*$/.test(raw)) return raw;
+    try {
+      const parsed = new URL(raw, window.location.href);
+      if (kind === 'image') {
+        const allowedHost = parsed.origin === window.location.origin || parsed.hostname === 'images.unsplash.com';
+        return allowedHost && /^https?:$/.test(parsed.protocol) ? parsed.href : '';
+      }
+      return /^(https?:|mailto:)$/.test(parsed.protocol) ? parsed.href : '';
+    } catch { return ''; }
+  };
+
+  const applyManagedAssets = () => {
+    document.querySelectorAll('[data-content-background]').forEach((node) => {
+      const value = managedURL(sharedI18n?.t(node.dataset.contentBackground), 'image');
+      if (value) node.style.backgroundImage = `url("${value}")`;
+    });
+    document.querySelectorAll('[data-content-src]').forEach((node) => {
+      const value = managedURL(sharedI18n?.t(node.dataset.contentSrc), 'image');
+      if (value) node.src = value;
+    });
+    document.querySelectorAll('[data-content-href]').forEach((node) => {
+      const value = managedURL(sharedI18n?.t(node.dataset.contentHref), 'link');
+      if (value) node.href = value;
+    });
+  };
+
   const header = document.querySelector('[data-header]');
   const menuToggle = document.querySelector('.menu-toggle');
   const mobileMenu = document.querySelector('#mobile-menu');
@@ -394,9 +423,14 @@
       button.setAttribute('aria-pressed', String(english));
     });
   };
-  updateLocaleControls();
+  const applyManagedAssetsWhenReady = async () => {
+    try { await sharedI18n?.ready; } catch { /* use static assets */ }
+    updateLocaleControls();
+    applyManagedAssets();
+  };
+  applyManagedAssetsWhenReady();
   document.addEventListener('DOMContentLoaded', updateLocaleControls, { once: true });
-  window.addEventListener('cgu:localechange', updateLocaleControls);
+  window.addEventListener('cgu:localechange', () => { updateLocaleControls(); applyManagedAssets(); });
 
   const sections = [...document.querySelectorAll('main section[id]')];
   const navLinks = [...document.querySelectorAll('.desktop-nav a')];

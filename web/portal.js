@@ -6,44 +6,15 @@
     locale: 'zh',
     t: (key) => key,
     pick: (value, fallback = '') => value ?? fallback,
-    apply: () => {}
+    apply: () => {},
+    ready: Promise.resolve(),
+    mergeSiteContent: () => {}
   };
   const API_BASE = String(window.CGU_CONFIG?.apiBase || '/api').replace(/\/$/, '');
   const USER_KEY = 'cgu_user';
-  const DEMO_KEY = 'cgu_demo_mode';
-
-  const demoCourses = [
-    { id: 'wind-101', code: 'CGU-W101', nameZh: '风与自然科学', nameEn: 'Wind & Natural Sciences', teacher: '琴 / Jean', credits: 4, term: '2026 秋季', type: 'required', capacity: 80, enrolledCount: 52, enrolled: true, description: '研究风场、生态与自由意志的边界。' },
-    { id: 'contract-204', code: 'CGU-C204', nameZh: '契约与商业文明', nameEn: 'Contracts & Commerce', teacher: '凝光 / Ningguang', credits: 3, term: '2026 秋季', type: 'required', capacity: 60, enrolledCount: 60, enrolled: false, description: '从港口出发，理解秩序、交换与信任。' },
-    { id: 'eternity-110', code: 'CGU-E110', nameZh: '永恒与设计实践', nameEn: 'Eternity & Design Practice', teacher: '神里绫华 / Ayaka', credits: 3, term: '2026 秋季', type: 'elective', capacity: 45, enrolledCount: 29, enrolled: false, description: '在变化中寻找稳定，在限制中创造新意。' },
-    { id: 'wisdom-301', code: 'CGU-W301', nameZh: '智慧与生命研究', nameEn: 'Wisdom & Life Studies', teacher: '纳西妲 / Nahida', credits: 4, term: '2027 春季', type: 'elective', capacity: 40, enrolledCount: 18, enrolled: false, description: '让知识走出终端，回到真实的生命现场。' },
-    { id: 'stars-220', code: 'CGU-S220', nameZh: '星象观测与测绘', nameEn: 'Astral Cartography', teacher: '莫娜 / Mona', credits: 3, term: '2026 秋季', type: 'elective', capacity: 30, enrolledCount: 17, enrolled: false, description: '用星图记录每一条尚未抵达的路线。' },
-    { id: 'fontaine-310', code: 'CGU-F310', nameZh: '审判与机械文明', nameEn: 'Judgment & Mechanical Civilization', teacher: '那维莱特 / Neuvillette', credits: 4, term: '2026 秋季', type: 'required', capacity: 40, enrolledCount: 21, enrolled: false, description: '从法庭与工坊，研究规则、能源与机械创造。' },
-    { id: 'natlan-220', code: 'CGU-N220', nameZh: '火与竞技生态', nameEn: 'Fire & Competitive Ecology', teacher: '教务联合授课', credits: 3, term: '2026 秋季', type: 'elective', capacity: 36, enrolledCount: 16, enrolled: false, description: '在部族、仪式与竞技场之间完成田野研究。' },
-    { id: 'snezhnaya-401', code: 'CGU-S401', nameZh: '至冬研究与极地治理', nameEn: 'Snezhnaya Studies & Polar Governance', teacher: '教务联合授课', credits: 4, term: '2026 秋季', type: 'elective', capacity: 32, enrolledCount: 12, enrolled: false, description: '以 7.0「无神怜爱的雪国」为起点，研究冰原社会与远行伦理。' }
-  ];
-  const demoGrades = [
-    { id: 'g1', courseId: 'wind-101', courseCode: 'CGU-W101', courseNameZh: '风与自然科学', courseNameEn: 'Wind & Natural Sciences', score: 92, point: 4, term: '2026 春季', status: 'passed', credits: 4 },
-    { id: 'g2', courseId: 'history-101', courseCode: 'CGU-H101', courseNameZh: '提瓦特文明导论', courseNameEn: 'Introduction to Teyvat Civilisation', score: 88, point: 3.7, term: '2026 春季', status: 'passed', credits: 3 },
-    { id: 'g3', courseId: 'field-108', courseCode: 'CGU-F108', courseNameZh: '野外实践基础', courseNameEn: 'Field Practice Fundamentals', score: '—', point: '—', term: '2026 秋季', status: 'inProgress', credits: 2 }
-  ];
-  const demoSchedule = [
-    { id: 's1', day: 1, start: '09:00', end: '10:40', courseId: 'wind-101', courseCode: 'CGU-W101', courseNameZh: '风与自然科学', courseNameEn: 'Wind & Natural Sciences', location: '风之庭院 A-201' },
-    { id: 's2', day: 3, start: '14:00', end: '15:40', courseId: 'contract-204', courseCode: 'CGU-C204', courseNameZh: '契约与商业文明', courseNameEn: 'Contracts & Commerce', location: '璃月港 B-108' },
-    { id: 's3', day: 5, start: '10:00', end: '11:40', courseId: 'eternity-110', courseCode: 'CGU-E110', courseNameZh: '永恒与设计实践', courseNameEn: 'Eternity & Design Practice', location: '稻妻工坊 C-03' },
-    { id: 's4', day: 2, start: '16:00', end: '17:40', courseId: 'stars-220', courseCode: 'CGU-S220', courseNameZh: '星象观测与测绘', courseNameEn: 'Astral Cartography', location: '须弥穹顶观测台' }
-  ];
-  const demoAnnouncements = [
-    { id: 'a1', type: 'ADMISSIONS', titleZh: '2026 秋季选课窗口开放', titleEn: 'Autumn 2026 course selection is open', contentZh: '请在 9 月 12 日前完成课程确认，冲突课程将由教务处统一复核。', contentEn: 'Confirm your courses by 12 September. Conflicts will be reviewed by the registrar.', publishedAt: '2026-08-18T09:00:00+08:00', published: true },
-    { id: 'a2', type: 'CAMPUS', titleZh: '风之庭院夜间自习区开放', titleEn: 'Windrise evening study hall is open', contentZh: '蒙德校区图书馆一层延长开放至 23:00，请携带学生证入场。', contentEn: 'The Mondstadt library first floor is open until 23:00. Bring your student card.', publishedAt: '2026-08-05T10:00:00+08:00', published: true },
-    { id: 'a3', type: 'RESEARCH', titleZh: '「元素与城市」研究招募', titleEn: 'Element & City research call', contentZh: '跨学院研究团队正在招募对城市、能源与文化感兴趣的学生。', contentEn: 'The interdisciplinary team welcomes students interested in cities, energy, and culture.', publishedAt: '2026-07-24T14:30:00+08:00', published: true },
-    { id: 'a4', type: 'WORLD_UPDATE', titleZh: '7.0「无神怜爱的雪国」：至冬研究方向开放', titleEn: 'Version 7.0 “Everwinter Without Mercy”: Snezhnaya studies open', contentZh: '根据原神官方 7.0 版本资讯，CGU 新增至冬研究与极地治理课程。', contentEn: 'Following the official Version 7.0 update, CGU adds a Snezhnaya studies track.', publishedAt: '2026-08-24T08:00:00+08:00', published: true }
-  ];
 
   const state = {
     user: null,
-    demo: false,
-    dataFallback: false,
     courses: [],
     enrollments: [],
     grades: [],
@@ -51,6 +22,7 @@
     announcements: [],
     adminCourses: [],
     adminAnnouncements: [],
+    adminSiteContent: [],
     adminStats: {},
     toastTimer: 0
   };
@@ -78,7 +50,7 @@
   const readUser = () => {
     try { return JSON.parse(readStorage(USER_KEY) || 'null'); } catch { return null; }
   };
-  const clearSession = () => { writeStorage(USER_KEY, ''); writeStorage(DEMO_KEY, ''); };
+  const clearSession = () => writeStorage(USER_KEY, '');
 
   const jsonHeaders = () => {
     return { Accept: 'application/json', 'Content-Type': 'application/json', 'X-CGU-Request': '1' };
@@ -119,7 +91,6 @@
 
   const postJSON = (path, method, body) => api(path, { method, body: JSON.stringify(body) });
   const isAuthError = (error) => error?.status === 401 || error?.status === 403;
-  const isMissingService = (error) => error?.network || error?.status === 404 || error?.status === 405 || error?.status >= 500;
 
   const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
   const localeValue = (value, fallback = '') => I18N.pick(value, fallback);
@@ -228,6 +199,13 @@
     published: value.published ?? value.isPublished ?? true
   });
 
+  const normalizeSiteContent = (value = {}) => ({
+    key: String(value.key ?? value.contentKey ?? value.content_key ?? '').trim(),
+    zh: String(value.zh ?? value.zhText ?? value.zh_text ?? ''),
+    en: String(value.en ?? value.enText ?? value.en_text ?? ''),
+    updatedAt: value.updatedAt ?? value.updated_at ?? ''
+  });
+
   const showToast = (message) => {
     const toast = document.querySelector('[data-toast]');
     if (!toast) return;
@@ -280,47 +258,31 @@
         const payload = result?.user ? result : (result?.account ? { user: result.account, ...result } : { user: result });
         const user = normalizeUser(payload.user || {});
         state.user = user;
-        state.demo = false;
-        writeStorage(DEMO_KEY, '');
         saveUser(user);
         redirectAfterLogin(user);
       } catch (error) {
-        const normalizedUsername = values.username.trim().toLowerCase();
-        const isDemo = (normalizedUsername === 'student' && values.password === 'student-demo') || (normalizedUsername === 'admin' && values.password === 'admin-demo');
-        if (isMissingService(error) && isDemo) {
-          const user = normalizeUser(values.username.trim().toLowerCase() === 'admin' ? { id: 'admin', username: 'admin', name: 'CGU Admin', role: 'admin', email: 'admin@cgu.example' } : { id: 'CGU2026001', username: 'student', name: '旅行者', role: 'student', studentId: 'CGU2026001', email: 'traveler@cgu.example', college: '风与自然科学学院', year: '2026' });
-          state.user = user;
-          state.demo = true;
-          writeStorage(DEMO_KEY, '1');
-          saveUser(user);
-          redirectAfterLogin(user);
-        } else if (error.status === 401 || error.status === 403) setError('login.errorInvalid');
+        if (error.status === 401 || error.status === 403) setError('login.errorInvalid');
         else setError(error.network || error.status >= 500 ? 'login.errorUnavailable' : 'login.errorInvalid');
       } finally {
         setButtonLoading(submit, false, 'login.submit');
       }
     });
     const existing = readUser();
-    if (existing || readStorage(DEMO_KEY)) {
+    if (existing) {
       apiAny(['/auth/me', '/me']).then((value) => { const user = normalizeUser(value); saveUser(user); redirectAfterLogin(user); }).catch((error) => {
-        if (readStorage(DEMO_KEY) && error.network) redirectAfterLogin(normalizeUser(existing));
-        else if (isAuthError(error)) clearSession();
+        if (isAuthError(error)) clearSession();
       });
     }
   };
 
   const ensureSession = async (requiredRole = 'student') => {
-    const storedUser = readUser();
-    const demo = readStorage(DEMO_KEY) === '1';
     try {
       const value = await apiAny(['/auth/me', '/me']);
       state.user = normalizeUser(value);
-      state.demo = false;
       saveUser(state.user);
     } catch (error) {
-      if (isAuthError(error)) { redirectToLogin(); return false; }
-      if (demo && storedUser) { state.user = normalizeUser(storedUser); state.demo = true; }
-      else { redirectToLogin(); return false; }
+      redirectToLogin();
+      return false;
     }
     if (requiredRole === 'admin' && state.user.role !== 'admin') {
       showPageAlert(I18N.t('admin.accessDenied'));
@@ -339,7 +301,7 @@
   const setupCommon = () => {
     document.querySelectorAll('[data-logout]').forEach((button) => button.addEventListener('click', async () => {
       if (!window.confirm(I18N.t('portal.signOutConfirm'))) return;
-      try { if (!state.demo) await apiAny(['/auth/logout', '/logout'], { method: 'POST', body: '{}' }); } catch { /* local session is still cleared */ }
+      try { await apiAny(['/auth/logout', '/logout'], { method: 'POST', body: '{}' }); } catch { /* the local display state is still cleared */ }
       clearSession();
       window.location.href = '/login';
     }));
@@ -355,6 +317,10 @@
     });
   };
 
+  const waitForManagedContent = async () => {
+    try { await I18N.ready; I18N.apply(); } catch { /* static dictionary remains the fallback */ }
+  };
+
   const setActiveNav = (selector, section) => document.querySelectorAll(selector).forEach((link) => link.classList.toggle('is-active', link.dataset.portalNav === section || link.dataset.adminNav === section));
   const setupHashNav = (kind) => {
     const selector = kind === 'admin' ? '[data-admin-nav]' : '[data-portal-nav]';
@@ -365,11 +331,10 @@
     document.querySelectorAll(selector).forEach((link) => link.addEventListener('click', () => window.setTimeout(update, 0)));
   };
 
-  const resource = async (path, fallback, keys) => {
+  const resource = async (path, keys) => {
     try { return listFrom(await api(path), keys); }
     catch (error) {
-      if (isAuthError(error)) { redirectToLogin(); throw error; }
-      if (isMissingService(error)) { state.dataFallback = true; return fallback.map((item) => ({ ...item })); }
+      if (isAuthError(error)) redirectToLogin();
       throw error;
     }
   };
@@ -405,12 +370,12 @@
     const enrolled = state.courses.filter(courseIsEnrolled).length;
     const next = state.schedule[0];
     const metrics = { credits: credits || 0, gpa, enrolled, nextClass: next ? courseLabel(next) : I18N.t('portal.noNextClass') };
-    const notes = { credits: I18N.locale === 'zh' ? '本科阶段目标 120' : 'Undergraduate target 120', gpa: I18N.locale === 'zh' ? `${passed.length} 门已出分` : `${passed.length} graded courses`, enrolled: I18N.locale === 'zh' ? '本学期' : 'This term', nextClass: next ? `${dayLabel(next.day)} · ${next.start}` : '—' };
+    const notes = { credits: I18N.t('portal.creditsTarget'), gpa: I18N.t('portal.gradedCourses', { count: passed.length }), enrolled: I18N.t('portal.currentTerm'), nextClass: next ? `${dayLabel(next.day)} · ${next.start}` : '—' };
     Object.entries(metrics).forEach(([key, value]) => document.querySelectorAll(`[data-metric="${key}"]`).forEach((node) => { node.textContent = value; }));
     Object.entries(notes).forEach(([key, value]) => document.querySelectorAll(`[data-metric-note="${key}"]`).forEach((node) => { node.textContent = value; }));
     document.querySelectorAll('[data-grade-summary]').forEach((node) => { node.textContent = `${passed.length}/${state.grades.length}`; });
     document.querySelectorAll('[data-course-count]').forEach((node) => { node.textContent = String(state.courses.length).padStart(2, '0'); });
-    document.querySelectorAll('[data-term-label]').forEach((node) => { node.textContent = state.courses[0]?.term || '2026'; });
+    document.querySelectorAll('[data-term-label]').forEach((node) => { node.textContent = state.courses[0]?.term || I18N.t('portal.termFallback'); });
   };
 
   const renderCourseFilters = () => {
@@ -503,15 +468,8 @@
     if (!course) return;
     button.disabled = true;
     try {
-      let response = null;
-      if (state.demo || state.dataFallback) {
-        course.enrolled = action === 'enroll';
-        if (action === 'enroll') course.enrolledCount += 1;
-        else course.enrolledCount = Math.max(0, course.enrolledCount - 1);
-      } else {
-        response = await postJSON('/enrollments', 'POST', { courseId: id, course_id: id, action });
-        course.enrolled = action === 'enroll';
-      }
+      const response = await postJSON('/enrollments', 'POST', { courseId: id, course_id: id, action });
+      course.enrolled = action === 'enroll';
       const activeRecord = state.enrollments.find((item) => String(item.courseId ?? item.course_id ?? item.courseCode ?? item.code) === String(id) && String(item.status ?? item.enrollmentStatus ?? 'enrolled').toLowerCase() === 'enrolled');
       if (action === 'enroll') {
         const returned = response?.enrollment || { courseId: id, status: 'enrolled' };
@@ -559,11 +517,11 @@
     setButtonLoading(refresh, true);
     try {
       const [courses, enrollments, grades, schedule, announcements] = await Promise.all([
-        resource('/courses', demoCourses, ['courses']),
-        resource('/enrollments', demoCourses.filter((course) => course.enrolled), ['enrollments', 'items']),
-        resource('/grades', demoGrades, ['grades']),
-        resource('/schedule', demoSchedule, ['schedule', 'entries']),
-        resource('/announcements', demoAnnouncements, ['announcements', 'items'])
+        resource('/courses', ['courses']),
+        resource('/enrollments', ['enrollments', 'items']),
+        resource('/grades', ['grades']),
+        resource('/schedule', ['schedule', 'entries']),
+        resource('/announcements', ['announcements', 'items'])
       ]);
       state.courses = courses.map(normalizeCourse);
       state.enrollments = enrollments;
@@ -571,7 +529,6 @@
       state.schedule = schedule.map(normalizeSchedule);
       state.announcements = announcements.map(normalizeAnnouncement);
       renderPortal();
-      if (state.demo || state.dataFallback) showToast(I18N.t('common.demo'));
     } catch (error) {
       if (!isAuthError(error)) showPageAlert(I18N.t('portal.loadError'));
     } finally { setButtonLoading(refresh, false, 'portal.refresh'); }
@@ -579,6 +536,7 @@
 
   const initPortal = async () => {
     setupHashNav('portal'); bindPortalEvents();
+    await waitForManagedContent();
     if (!await ensureSession('student')) return;
     await loadPortalData();
     window.addEventListener('cgu:localechange', renderPortal);
@@ -614,14 +572,19 @@
     if (courseList) courseList.innerHTML = state.adminCourses.length ? state.adminCourses.map((course) => `<tr><td>${escapeHTML(course.code)}</td><td><span class="course-name">${escapeHTML(courseLabel(course))}</span>${courseSecondaryLabel(course)}</td><td>${escapeHTML(course.teacher)}</td><td>${escapeHTML(course.credits)}</td><td>${escapeHTML(course.term)}</td><td>${escapeHTML(course.enrolledCount)}/${escapeHTML(course.capacity || '—')}</td><td><button class="table-action" type="button" data-edit-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></td></tr>`).join('') : `<tr><td colspan="7" class="empty-state">${escapeHTML(I18N.t('admin.noCourses'))}</td></tr>`;
     const announcementList = document.querySelector('[data-admin-announcement-list]');
     if (announcementList) announcementList.innerHTML = state.adminAnnouncements.length ? state.adminAnnouncements.map((item) => `<article class="admin-announcement-row"><div><span class="announcement-type">${escapeHTML(item.type)}</span><h3>${escapeHTML(announcementTitle(item))}</h3><p>${escapeHTML(announcementContent(item))}</p></div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.publishedAt, true))}</div><div class="admin-actions"><span class="status-pill${item.published ? '' : ' is-full'}">${escapeHTML(item.published ? I18N.t('admin.publish') : I18N.t('admin.unpublish'))}</span><button class="table-action" type="button" data-edit-announcement="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-announcement="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></div></article>`).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noAnnouncements'))}</p>`;
+    renderSiteContent();
     I18N.apply();
   };
 
+  const renderSiteContent = () => {
+    const list = document.querySelector('[data-site-content-list]');
+    if (!list) return;
+    const query = String(document.querySelector('[data-site-content-search]')?.value || '').trim().toLowerCase();
+    const visible = state.adminSiteContent.filter((item) => !query || `${item.key} ${item.zh} ${item.en}`.toLowerCase().includes(query));
+    list.innerHTML = visible.length ? visible.map((item) => `<tr><td><code>${escapeHTML(item.key)}</code></td><td class="content-preview">${escapeHTML(item.zh)}</td><td class="content-preview">${escapeHTML(item.en)}</td><td><button class="table-action" type="button" data-edit-site-content="${escapeHTML(item.key)}">${escapeHTML(I18N.t('admin.edit'))}</button></td></tr>`).join('') : `<tr><td colspan="4" class="empty-state">${escapeHTML(I18N.t('admin.noSiteContent'))}</td></tr>`;
+  };
+
   const adminRequest = async (path, method, body) => {
-    if (state.demo) {
-      if (method === 'DELETE') return {};
-      return body || {};
-    }
     return postJSON(path, method, body || {});
   };
 
@@ -691,22 +654,59 @@
     });
   };
 
+  const handleAdminSiteContent = () => {
+    const form = document.querySelector('[data-site-content-form]');
+    const editor = document.querySelector('[data-site-content-editor]');
+    if (!form) return;
+    const close = () => { form.reset(); form.elements.key.readOnly = false; showEditor(editor, false); };
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!form.checkValidity()) { showToast(I18N.t('admin.required')); form.reportValidity(); return; }
+      const values = Object.fromEntries(new FormData(form).entries());
+      try {
+        const result = await adminRequest('/admin/site-content', 'PUT', { key: values.key.trim(), zh: values.zh.trim(), en: values.en.trim() });
+        const updated = normalizeSiteContent(result?.content || result);
+        state.adminSiteContent = [...state.adminSiteContent.filter((item) => item.key !== updated.key), updated].sort((a, b) => a.key.localeCompare(b.key));
+        I18N.mergeSiteContent?.([updated]);
+        I18N.apply(); renderSiteContent(); close(); showToast(I18N.t('admin.saved'));
+      } catch (error) { if (isAuthError(error)) redirectToLogin(); else showToast(error.message || I18N.t('admin.error')); }
+    });
+    document.querySelector('[data-new-site-content]')?.addEventListener('click', () => { form.reset(); form.elements.key.readOnly = false; showEditor(editor, true); });
+    document.querySelector('[data-cancel-site-content]')?.addEventListener('click', close);
+    document.querySelector('[data-site-content-search]')?.addEventListener('input', renderSiteContent);
+    document.querySelector('[data-site-content-list]')?.addEventListener('click', (event) => {
+      const edit = event.target.closest('[data-edit-site-content]');
+      if (!edit) return;
+      const item = state.adminSiteContent.find((value) => value.key === edit.dataset.editSiteContent);
+      if (!item) return;
+      fillForm(form, item, ['key', 'zh', 'en']);
+      form.elements.key.readOnly = true;
+      showEditor(editor, true);
+    });
+  };
+
   const loadAdminData = async () => {
     try {
       const [courses, announcements, stats] = await Promise.all([
-        resource('/admin/courses', demoCourses, ['courses']),
-        resource('/admin/announcements', demoAnnouncements, ['announcements', 'items']),
-        api('/admin/stats').catch((error) => { if (isAuthError(error)) throw error; state.dataFallback = true; return {}; })
+        resource('/admin/courses', ['courses']),
+        resource('/admin/announcements', ['announcements', 'items']),
+        api('/admin/stats')
       ]);
-      state.adminCourses = courses.map(normalizeCourse); state.adminAnnouncements = announcements.map(normalizeAnnouncement); state.adminStats = stats || {}; renderAdmin();
-      if (state.demo) showToast(I18N.t('common.demo'));
+      const content = await resource('/admin/site-content', ['content', 'items']);
+      const managed = new Map((I18N.catalog?.() || []).map((item) => [item.key, normalizeSiteContent(item)]));
+      content.map(normalizeSiteContent).forEach((item) => {
+        const existing = managed.get(item.key) || {};
+        managed.set(item.key, { ...existing, ...item, zh: item.zh || existing.zh || '', en: item.en || existing.en || '' });
+      });
+      state.adminCourses = courses.map(normalizeCourse); state.adminAnnouncements = announcements.map(normalizeAnnouncement); state.adminSiteContent = [...managed.values()].filter((item) => item.key).sort((a, b) => a.key.localeCompare(b.key)); state.adminStats = stats || {}; renderAdmin();
     } catch (error) { if (!isAuthError(error)) showPageAlert(I18N.t('admin.error')); }
   };
 
   const initAdmin = async () => {
     setupHashNav('admin');
+    await waitForManagedContent();
     if (!await ensureSession('admin')) return;
-    handleAdminCourseForm(); handleAdminAnnouncementForm();
+    handleAdminCourseForm(); handleAdminAnnouncementForm(); handleAdminSiteContent();
     await loadAdminData();
     window.addEventListener('cgu:localechange', renderAdmin);
   };

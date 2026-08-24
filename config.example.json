@@ -18,6 +18,6 @@
   },
   "staticDir": "web",
   "cookieSecure": false,
-  "studentPassword": "student-demo",
-  "adminPassword": "admin-demo"
+  "adminUsername": "admin",
+  "adminPassword": ""
 }

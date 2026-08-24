@@ -67,18 +67,19 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
 - Residual mitigation: keep login responses generic in the proxy and monitoring
   layer as well.
 
-### GO-AUTH-004: default administrator credentials (Critical, fixed)
+### GO-AUTH-004: bootstrap administrator credentials (Critical, fixed)
 
 - Location: startup validation in `main.go` and seeded-user persistence in
   `database.go`.
-- Evidence: a non-loopback listener refuses to start with `admin-demo`; a
-  custom configured password updates the fixed MySQL demo account hash.
+- Evidence: startup refuses to serve without an explicitly configured
+  administrator password; the configured hash and username are synchronized
+  to the bootstrap administrator row in MySQL.
 - Impact: prevents accidental internet exposure of a known administrator
   credential and makes environment-based password rotation effective.
-- Fix: fail closed before opening the listener and persist configured hash
-  overrides with a parameterized update.
-- Residual mitigation: use a unique secret-managed password and remove or
-  disable demo accounts before a real public launch.
+- Fix: fail closed before opening the listener, persist the configured hash
+  with a parameterized upsert, and remove the legacy seeded student account.
+- Residual mitigation: use a unique secret-managed password and rotate it
+  through the deployment secret store.
 
 ### GO-CSRF-001: state-changing browser requests (High, fixed)
 
@@ -112,7 +113,7 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
 - Impact: a client-side injection cannot directly read a persisted bearer
   token.
 - Fix: removed the token key and Authorization-header fallback; only the
-  non-sensitive demo/user display state remains in browser storage.
+  non-sensitive user display state remains in browser storage.
 - Residual mitigation: keep dynamic HTML values escaped before any
   `innerHTML` assignment and do not add third-party scripts without review.
 
@@ -132,9 +133,9 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
 1. Serve behind HTTPS and set `CGU_COOKIE_SECURE=true` (or the equivalent
    config-file value). Never expose the development HTTP listener directly to
    the public internet.
-2. Inject `CGU_ADMIN_PASSWORD`, `CGU_STUDENT_PASSWORD`, and MySQL credentials
-   from a secret manager or protected environment. Rotate any test credentials
-   before production use.
+2. Inject `CGU_ADMIN_USERNAME`, `CGU_ADMIN_PASSWORD`, and MySQL credentials
+   from a secret manager or protected environment. Rotate the administrator
+   secret through that same mechanism.
 3. Restrict the MySQL account to the CGU schema, bind MySQL to a private
    network, and enable encrypted transport where supported.
 4. For more than one Go replica, move sessions and login throttling to a

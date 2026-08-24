@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -11,12 +12,12 @@ import (
 // AppConfig is intentionally small and serializable so the same deployment
 // can be configured by config.json, .env, or process environment variables.
 type AppConfig struct {
-	Server          ServerConfig   `json:"server"`
-	Database        DatabaseConfig `json:"database"`
-	StaticDir       string         `json:"staticDir"`
-	CookieSecure    bool           `json:"cookieSecure"`
-	StudentPassword string         `json:"studentPassword"`
-	AdminPassword   string         `json:"adminPassword"`
+	Server        ServerConfig   `json:"server"`
+	Database      DatabaseConfig `json:"database"`
+	StaticDir     string         `json:"staticDir"`
+	CookieSecure  bool           `json:"cookieSecure"`
+	AdminUsername string         `json:"adminUsername"`
+	AdminPassword string         `json:"adminPassword"`
 }
 
 type ServerConfig struct {
@@ -40,11 +41,10 @@ type DatabaseConfig struct {
 
 func defaultConfig() AppConfig {
 	return AppConfig{
-		Server:          ServerConfig{Address: "127.0.0.1:8000", Host: "127.0.0.1", Port: 8000},
-		Database:        DatabaseConfig{Driver: "mysql", Host: "127.0.0.1", Port: 3306, Name: "cgu", MaxOpenConns: 10, MaxIdleConns: 5},
-		StaticDir:       "web",
-		StudentPassword: "student-demo",
-		AdminPassword:   "admin-demo",
+		Server:        ServerConfig{Address: "127.0.0.1:8000", Host: "127.0.0.1", Port: 8000},
+		Database:      DatabaseConfig{Driver: "mysql", Host: "127.0.0.1", Port: 3306, Name: "cgu", MaxOpenConns: 10, MaxIdleConns: 5},
+		StaticDir:     "web",
+		AdminUsername: "admin",
 	}
 }
 
@@ -53,9 +53,7 @@ func LoadConfig() AppConfig {
 	configDatabaseEnabledSet := false
 	configAddressSet := false
 	configFile := firstEnv("CGU_CONFIG_FILE", "CONFIG_FILE")
-	if configFile == "" {
-		configFile = "config.json"
-	}
+	configFile = resolveDeploymentFile(configFile, "config.json")
 	if data, err := os.ReadFile(configFile); err == nil {
 		var raw struct {
 			Server   map[string]json.RawMessage `json:"server"`
@@ -71,22 +69,17 @@ func LoadConfig() AppConfig {
 	}
 	fileEnv := map[string]string{}
 	envFile := firstEnv("CGU_ENV_FILE", "ENV_FILE")
-	if envFile == "" {
-		envFile = ".env"
-	}
+	envFile = resolveDeploymentFile(envFile, ".env")
 	if data, err := os.ReadFile(envFile); err == nil {
 		fileEnv = parseDotEnv(string(data))
 	}
 
 	cfg.StaticDir = envString(fileEnv, "CGU_STATIC_DIR", cfg.StaticDir)
 	cfg.CookieSecure = envBool(fileEnv, "CGU_COOKIE_SECURE", cfg.CookieSecure)
-	cfg.StudentPassword = envString(fileEnv, "CGU_STUDENT_PASSWORD", cfg.StudentPassword)
+	cfg.AdminUsername = envString(fileEnv, "CGU_ADMIN_USERNAME", cfg.AdminUsername)
 	cfg.AdminPassword = envString(fileEnv, "CGU_ADMIN_PASSWORD", cfg.AdminPassword)
-	if cfg.StudentPassword == "" {
-		cfg.StudentPassword = "student-demo"
-	}
-	if cfg.AdminPassword == "" {
-		cfg.AdminPassword = "admin-demo"
+	if strings.TrimSpace(cfg.AdminUsername) == "" {
+		cfg.AdminUsername = "admin"
 	}
 	addressOverride := firstEnvWithFile(fileEnv, "CGU_ADDR")
 	address := cfg.Server.Address
@@ -133,6 +126,48 @@ func LoadConfig() AppConfig {
 		cfg.Database.Port = 3306
 	}
 	return cfg
+}
+
+// resolveDeploymentFile lets a binary find its private config beside the
+// executable while retaining the conventional current-working-directory
+// behavior. Explicit paths remain untouched so operators can use an absolute
+// path or a path relative to the process directory.
+func resolveDeploymentFile(explicit, name string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit
+	}
+	workingDir, _ := os.Getwd()
+	executableDir := ""
+	if executable, err := os.Executable(); err == nil {
+		executableDir = filepath.Dir(executable)
+	}
+	return resolveDeploymentFileFrom("", name, workingDir, executableDir)
+}
+
+func resolveDeploymentFileFrom(explicit, name, workingDir, executableDir string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit
+	}
+	candidates := make([]string, 0, 2)
+	if workingDir != "" {
+		candidates = append(candidates, filepath.Join(workingDir, name))
+	}
+	if executableDir != "" && !samePath(workingDir, executableDir) {
+		candidates = append(candidates, filepath.Join(executableDir, name))
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	// Keep the conventional name for warning messages and future creation.
+	return name
+}
+
+func samePath(left, right string) bool {
+	leftPath, leftErr := filepath.Abs(left)
+	rightPath, rightErr := filepath.Abs(right)
+	return leftErr == nil && rightErr == nil && strings.EqualFold(filepath.Clean(leftPath), filepath.Clean(rightPath))
 }
 
 func (c AppConfig) MySQLDSN() string {

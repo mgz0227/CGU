@@ -123,6 +123,21 @@ type Announcement struct {
 	Author      string `json:"author"`
 }
 
+// SiteContent is a bilingual, administrator-managed override for frontend
+// copy. The key matches the data-i18n keys used by the web clients.
+type SiteContent struct {
+	Key       string `json:"key"`
+	Zh        string `json:"zh"`
+	En        string `json:"en"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+}
+
+type SiteContentInput struct {
+	Key string `json:"key"`
+	Zh  string `json:"zh"`
+	En  string `json:"en"`
+}
+
 // Input structs accept the bilingual field names emitted by portal.js and a
 // few common snake_case aliases used by older integrations.
 type LoginRequest struct {
@@ -186,39 +201,36 @@ type session struct {
 }
 
 type Store struct {
-	mu                      sync.RWMutex
-	db                      *sql.DB
-	users                   map[string]*User
-	studentPasswordOverride bool
-	adminPasswordOverride   bool
-	courses                 []*Course
-	enrollments             []*Enrollment
-	grades                  []*Grade
-	schedule                []*ScheduleEntry
-	announcements           []*Announcement
+	mu            sync.RWMutex
+	db            *sql.DB
+	users         map[string]*User
+	courses       []*Course
+	enrollments   []*Enrollment
+	grades        []*Grade
+	schedule      []*ScheduleEntry
+	announcements []*Announcement
+	siteContent   map[string]*SiteContent
 }
 
 func NewStore() *Store {
-	return NewStoreWithPasswords(envOr("CGU_STUDENT_PASSWORD", "student-demo"), envOr("CGU_ADMIN_PASSWORD", "admin-demo"))
+	cfg := LoadConfig()
+	return NewStoreWithAdmin(cfg.AdminUsername, cfg.AdminPassword)
 }
 
-func NewStoreWithPasswords(studentPassword, adminPassword string) *Store {
-	studentPasswordOverride := studentPassword != "" && studentPassword != "student-demo"
-	adminPasswordOverride := adminPassword != "" && adminPassword != "admin-demo"
-	if studentPassword == "" {
-		studentPassword = "student-demo"
+// NewStoreWithAdmin creates the in-memory store and, when a password is
+// supplied, exactly one bootstrap administrator. An empty password is useful
+// for public-route tests but is rejected by main before serving requests.
+func NewStoreWithAdmin(username, password string) *Store {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		username = "admin"
 	}
-	if adminPassword == "" {
-		adminPassword = "admin-demo"
-	}
-	s := &Store{users: make(map[string]*User), studentPasswordOverride: studentPasswordOverride, adminPasswordOverride: adminPasswordOverride}
-	s.users["student"] = &User{
-		ID: "student", Username: "student", Name: "星尘同学", Email: "student@cgu.local", Role: "student",
-		PasswordHash: hashPassword(studentPassword), StudentID: "CGU2026001", College: "风与自然科学学院", Year: "2026",
-	}
-	s.users["admin"] = &User{
-		ID: "admin", Username: "admin", Name: "教务处", Email: "admin@cgu.local", Role: "admin",
-		PasswordHash: hashPassword(adminPassword),
+	s := &Store{users: make(map[string]*User), siteContent: defaultSiteContent()}
+	if strings.TrimSpace(password) != "" {
+		s.users["admin"] = &User{
+			ID: "admin", Username: username, Name: "教务处", Email: "admin@cgu.local", Role: "admin",
+			PasswordHash: hashPassword(password),
+		}
 	}
 	s.seed()
 	return s
@@ -382,6 +394,150 @@ func (s *Store) stats() map[string]int {
 		}
 	}
 	return map[string]int{"courses": len(s.courses), "students": students, "sections": sections, "pending": pending}
+}
+
+func defaultSiteContent() map[string]*SiteContent {
+	items := []SiteContent{
+		{Key: "brand.name", Zh: "原神大学", En: "China Genshin University"},
+		{Key: "brand.short", Zh: "CGU", En: "CGU"},
+		{Key: "brand.full", Zh: "China Genshin University", En: "China Genshin University"},
+		{Key: "nav.home", Zh: "返回首页", En: "University home"},
+		{Key: "nav.portal", Zh: "学生教务", En: "Student portal"},
+		{Key: "nav.admin", Zh: "后台管理", En: "Administration"},
+		{Key: "login.title", Zh: "登录 CGU 门户", En: "Sign in to CGU"},
+		{Key: "login.metaDescription", Zh: "CGU 原神大学校园访问入口", En: "China Genshin University campus access"},
+		{Key: "login.subtitle", Zh: "进入课程、成绩与校园服务。", En: "Access courses, grades, and campus services."},
+		{Key: "login.submit", Zh: "登录门户", En: "Sign in"},
+		{Key: "login.footerCopyright", Zh: "© 2026 CGU", En: "© 2026 CGU"},
+		{Key: "login.footerServices", Zh: "教务服务", En: "Academic services"},
+		{Key: "home.heroTitleLead", Zh: "在提瓦特，", En: "In Teyvat,"},
+		{Key: "home.heroTitleEm", Zh: "成为你想成为的人", En: "become who you are meant to be"},
+		{Key: "home.heroLede", Zh: "一所为旅行者而设的大学。把元素力化为方法，把每一次相遇写进你的学术旅程。", En: "A university for travelers. Turn elemental power into method, and every encounter into part of your academic journey."},
+		{Key: "home.statSchoolsValue", Zh: "07", En: "07"},
+		{Key: "home.statCoursesValue", Zh: "42", En: "42"},
+		{Key: "home.statJourneysValue", Zh: "∞", En: "∞"},
+		{Key: "home.aboutSectionNumber", Zh: "01", En: "01"},
+		{Key: "home.programWindNumber", Zh: "01", En: "01"},
+		{Key: "home.programContractNumber", Zh: "02", En: "02"},
+		{Key: "home.programDesignNumber", Zh: "03", En: "03"},
+		{Key: "home.programWisdomNumber", Zh: "04", En: "04"},
+		{Key: "home.programJusticeNumber", Zh: "05", En: "05"},
+		{Key: "home.programFlameNumber", Zh: "06", En: "06"},
+		{Key: "home.programPolarNumber", Zh: "07", En: "07"},
+		{Key: "home.featureDate", Zh: "08.12", En: "08.12"},
+		{Key: "home.featureYear", Zh: "2026", En: "2026"},
+		{Key: "home.newsSnezhnayaDate", Zh: "08.12", En: "08.12"},
+		{Key: "home.newsSnezhnayaYear", Zh: "2026", En: "2026"},
+		{Key: "home.newsCampusDate", Zh: "08.05", En: "08.05"},
+		{Key: "home.newsCampusYear", Zh: "2026", En: "2026"},
+		{Key: "home.newsResearchDate", Zh: "07.24", En: "07.24"},
+		{Key: "home.newsResearchYear", Zh: "2026", En: "2026"},
+		{Key: "home.footerEmail", Zh: "hello@cgu-university.example", En: "hello@cgu-university.example"},
+		{Key: "home.programsTitle", Zh: "学院与专业", En: "Schools and programs"},
+		{Key: "home.lifeTitle", Zh: "校园动态", En: "Campus life"},
+		{Key: "home.admissionsTitle", Zh: "准备好出发了吗？", En: "Ready to set out?"},
+		{Key: "home.footerAddress", Zh: "璃月港 · 玉京台 7 号", En: "Liyue Harbor · Yujing Terrace 7"},
+		{Key: "portal.title", Zh: "我的教务空间", En: "My academic space"},
+		{Key: "portal.metaDescription", Zh: "CGU 原神大学学生教务门户", En: "China Genshin University student portal"},
+		{Key: "portal.welcome", Zh: "欢迎回来，{name}", En: "Welcome back, {name}"},
+		{Key: "portal.welcomeFallback", Zh: "欢迎回来", En: "Welcome back"},
+		{Key: "portal.academicsKicker", Zh: "ACADEMICS", En: "ACADEMICS"},
+		{Key: "portal.campusKicker", Zh: "CAMPUS LIFE", En: "CAMPUS LIFE"},
+		{Key: "portal.accountKicker", Zh: "ACCOUNT", En: "ACCOUNT"},
+		{Key: "portal.noticeType", Zh: "NOTICE", En: "NOTICE"},
+		{Key: "portal.creditsTarget", Zh: "本科阶段目标 120", En: "Undergraduate target 120"},
+		{Key: "portal.gradedCourses", Zh: "{count} 门已出分", En: "{count} graded courses"},
+		{Key: "portal.currentTerm", Zh: "本学期", En: "This term"},
+		{Key: "portal.termFallback", Zh: "2026", En: "2026"},
+		{Key: "admin.title", Zh: "教务管理台", En: "Academic administration"},
+		{Key: "admin.metaDescription", Zh: "CGU 原神大学教务管理后台", En: "China Genshin University administration portal"},
+		{Key: "admin.subtitle", Zh: "维护课程、公告与校园学术信息。", En: "Maintain courses, announcements, and academic information."},
+		{Key: "admin.coursesUnit", Zh: "COURSES", En: "COURSES"},
+		{Key: "admin.studentsUnit", Zh: "STUDENTS", En: "STUDENTS"},
+		{Key: "admin.sectionsUnit", Zh: "OPEN SECTIONS", En: "OPEN SECTIONS"},
+		{Key: "admin.pendingUnit", Zh: "PENDING", En: "PENDING"},
+		{Key: "admin.courseQuickNumber", Zh: "01", En: "01"},
+		{Key: "admin.announcementQuickNumber", Zh: "02", En: "02"},
+		{Key: "admin.contentKicker", Zh: "CONTENT MANAGEMENT", En: "CONTENT MANAGEMENT"},
+		{Key: "asset.heroImage", Zh: "https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=2000&q=88", En: "https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=2000&q=88"},
+		{Key: "asset.aboutImage", Zh: "https://images.unsplash.com/photo-1511497584788-876760111969?auto=format&fit=crop&w=1000&q=85", En: "https://images.unsplash.com/photo-1511497584788-876760111969?auto=format&fit=crop&w=1000&q=85"},
+		{Key: "asset.featureImage", Zh: "https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=1400&q=85", En: "https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=1400&q=85"},
+		{Key: "asset.programWindImage", Zh: "https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=900&q=80", En: "https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=900&q=80"},
+		{Key: "asset.programContractImage", Zh: "https://images.unsplash.com/photo-1548013146-72479768bada?auto=format&fit=crop&w=900&q=80", En: "https://images.unsplash.com/photo-1548013146-72479768bada?auto=format&fit=crop&w=900&q=80"},
+		{Key: "asset.programDesignImage", Zh: "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=900&q=80", En: "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=900&q=80"},
+		{Key: "asset.programWisdomImage", Zh: "https://images.unsplash.com/photo-1534447677768-be436bb09401?auto=format&fit=crop&w=900&q=80", En: "https://images.unsplash.com/photo-1534447677768-be436bb09401?auto=format&fit=crop&w=900&q=80"},
+		{Key: "asset.programJusticeImage", Zh: "https://images.unsplash.com/photo-1494526585095-c41746248156?auto=format&fit=crop&w=900&q=80", En: "https://images.unsplash.com/photo-1494526585095-c41746248156?auto=format&fit=crop&w=900&q=80"},
+		{Key: "asset.programFlameImage", Zh: "https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=900&q=80", En: "https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=900&q=80"},
+		{Key: "asset.programPolarImage", Zh: "https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=900&q=80", En: "https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=900&q=80"},
+		{Key: "link.officialNews", Zh: "https://genshin.hoyoverse.com/zh-tw/news", En: "https://genshin.hoyoverse.com/en/news"},
+		{Key: "link.featureNews", Zh: "https://genshin.hoyoverse.com/zh-tw/news", En: "https://genshin.hoyoverse.com/en/news"},
+		{Key: "link.newsSnezhnaya", Zh: "https://genshin.hoyoverse.com/zh-tw/news", En: "https://genshin.hoyoverse.com/en/news"},
+		{Key: "link.newsCampus", Zh: "#contact", En: "#contact"},
+		{Key: "link.newsResearch", Zh: "#programs", En: "#programs"},
+		{Key: "link.footerEmail", Zh: "mailto:hello@cgu-university.example", En: "mailto:hello@cgu-university.example"},
+	}
+	result := make(map[string]*SiteContent, len(items))
+	for _, item := range items {
+		copy := item
+		result[item.Key] = &copy
+	}
+	return result
+}
+
+func (s *Store) siteContentList() []SiteContent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]SiteContent, 0, len(s.siteContent))
+	for _, item := range s.siteContent {
+		if item == nil {
+			continue
+		}
+		result = append(result, *item)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Key < result[j].Key })
+	return result
+}
+
+func (s *Store) updateSiteContent(input SiteContentInput) (*SiteContent, *apiError) {
+	key := strings.TrimSpace(input.Key)
+	if key == "" || len(key) > 160 || !validSiteContentKey(key) {
+		return nil, apiErr(400, "invalid_input", "content key must contain letters, numbers, dots, dashes, or underscores")
+	}
+	zh, en := strings.TrimSpace(input.Zh), strings.TrimSpace(input.En)
+	if zh == "" && en == "" {
+		return nil, apiErr(400, "invalid_input", "at least one language value is required")
+	}
+	if len([]rune(zh)) > 8000 || len([]rune(en)) > 8000 {
+		return nil, apiErr(400, "invalid_input", "content value is too long")
+	}
+	item := &SiteContent{Key: key, Zh: zh, En: en, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.siteContent == nil {
+		s.siteContent = make(map[string]*SiteContent)
+	}
+	previous, existed := s.siteContent[key]
+	s.siteContent[key] = item
+	if err := s.persistSiteContentLocked(item); err != nil {
+		if existed {
+			s.siteContent[key] = previous
+		} else {
+			delete(s.siteContent, key)
+		}
+		return nil, apiErr(http.StatusServiceUnavailable, "content_persistence_failed", "site content could not be saved")
+	}
+	copy := *item
+	return &copy, nil
+}
+
+func validSiteContentKey(key string) bool {
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s *Store) changeEnrollment(studentID, courseID, action string) (*Enrollment, *apiError) {
@@ -854,6 +1010,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.listSchedule(w, r)
 	case p == "/api/announcements" && r.Method == http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "announcements": s.store.announcementsFor(s.currentUser(r), false)})
+	case p == "/api/site-content" && r.Method == http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": s.store.siteContentList()})
 	case p == "/api/announcements" && r.Method == http.MethodPost:
 		if !s.requireAdmin(w, r) {
 			return
@@ -923,6 +1081,17 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			s.createAnnouncement(w, r)
 		} else {
 			methodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
+	case p == "/api/admin/site-content":
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": s.store.siteContentList()})
+		} else if r.Method == http.MethodPut || r.Method == http.MethodPost {
+			s.updateSiteContent(w, r)
+		} else {
+			methodNotAllowed(w, http.MethodGet, http.MethodPut, http.MethodPost)
 		}
 	case strings.HasPrefix(p, "/api/admin/announcements/"):
 		if !s.requireAdmin(w, r) {
@@ -1142,6 +1311,20 @@ func (s *Server) deleteAnnouncement(w http.ResponseWriter, id string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "announcement": item})
+}
+
+func (s *Server) updateSiteContent(w http.ResponseWriter, r *http.Request) {
+	var input SiteContentInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, apiErr(400, "invalid_input", "content key and values are required"))
+		return
+	}
+	item, apiError := s.store.updateSiteContent(input)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": item})
 }
 
 func (s *Server) currentUser(r *http.Request) *User {
@@ -1388,13 +1571,6 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 }
 
-func envOr(name, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-		return value
-	}
-	return fallback
-}
-
 func randomID(bytes int) string {
 	if bytes < 16 {
 		bytes = 16
@@ -1439,7 +1615,7 @@ func verifyPassword(password, encoded string) bool {
 }
 
 // pbkdf2SHA256 is the RFC 8018 PBKDF2 construction kept here to avoid an
-// external x/crypto dependency in the single-binary demo service.
+// external x/crypto dependency in the single-binary service.
 func pbkdf2SHA256(password, salt []byte, iterations, keyLength int) []byte {
 	if iterations < 1 || keyLength < 1 {
 		return nil
@@ -1478,15 +1654,6 @@ func (s *Store) seed() {
 		&Course{ID: "cgu-natlan-220", Code: "NAT220", NameZh: "火与竞技生态", NameEn: "Fire & Competitive Ecology", Department: "纳塔田野与竞技学院", Teacher: "教务联合授课", Credits: 3, Description: "在部族、仪式与竞技场之间，完成一场尊重当地知识的田野研究。", Capacity: 36, Type: "elective", Term: "2026-秋"},
 		&Course{ID: "cgu-snezhnaya-401", Code: "SNE401", NameZh: "至冬研究与极地治理", NameEn: "Snezhnaya Studies & Polar Governance", Department: "至冬与极地研究学院", Teacher: "教务联合授课", Credits: 4, Description: "以 7.0「无神怜爱的雪国」为新起点，研究冰原社会、风险与远行伦理。", Capacity: 32, Type: "elective", Term: "2026-秋"},
 	)
-	s.enrollments = append(s.enrollments, &Enrollment{ID: "enrollment-elements-101", StudentID: "student", CourseID: "cgu-elements-101", Term: "2026-秋", Status: "enrolled"})
-	s.grades = append(s.grades,
-		&Grade{ID: "grade-elm101", StudentID: "student", CourseID: "cgu-elements-101", CourseCode: "ELM101", CourseNameZh: "元素力与世界观", CourseNameEn: "Elements & Worldview", Score: 96, Point: 4.0, Term: "2026-春", Status: "passed", Credits: 3},
-		&Grade{ID: "grade-nat202", StudentID: "student", CourseID: "cgu-nature-202", CourseCode: "NAT202", CourseNameZh: "提瓦特自然地理", CourseNameEn: "Teyvat Physical Geography", Score: 91, Point: 3.7, Term: "2026-春", Status: "passed", Credits: 4},
-	)
-	s.schedule = append(s.schedule,
-		&ScheduleEntry{ID: "slot-elm101", StudentID: "student", CourseID: "cgu-elements-101", CourseCode: "ELM101", CourseNameZh: "元素力与世界观", CourseNameEn: "Elements & Worldview", Day: 1, Start: "09:00", End: "10:40", Location: "风之庭院 101", Teacher: "丽莎"},
-		&ScheduleEntry{ID: "slot-mondstadt210", StudentID: "student", CourseID: "cgu-mondstadt-210", CourseCode: "MUS210", CourseNameZh: "风之诗与文化记忆", CourseNameEn: "Songs of Wind & Cultural Memory", Day: 3, Start: "14:00", End: "15:40", Location: "西风礼堂 204", Teacher: "温迪"},
-	)
 	s.announcements = append(s.announcements,
 		&Announcement{ID: "announcement-welcome", TitleZh: "2026 秋季学期报到安排", TitleEn: "Autumn 2026 arrival schedule", ContentZh: "风之庭院将于 9 月 1 日开放报到，旅行者请携带录取确认函。", ContentEn: "Windrise Court opens on 1 September. Bring your admission confirmation.", Type: "ADMISSIONS", Audience: "all", PublishedAt: "2026-08-20T09:00:00Z", Published: true, Author: "admin"},
 		&Announcement{ID: "announcement-enrollment", TitleZh: "选课周提醒", TitleEn: "Course selection week reminder", ContentZh: "学生门户将在 8 月 26 日 09:00 开放选课，请提前确认课表。", ContentEn: "Course selection opens at 09:00 on 26 August. Review your schedule first.", Type: "ACADEMICS", Audience: "student", PublishedAt: "2026-08-22T09:00:00Z", Published: true, Author: "admin"},
@@ -1496,14 +1663,17 @@ func (s *Store) seed() {
 
 func main() {
 	cfg := LoadConfig()
+	if strings.TrimSpace(cfg.AdminPassword) == "" {
+		log.Fatal("administrator password is not configured; set adminPassword in config.json or CGU_ADMIN_PASSWORD")
+	}
+	if len([]byte(cfg.AdminPassword)) < 12 {
+		log.Fatal("administrator password must contain at least 12 characters")
+	}
 	addr := cfg.Server.Address
 	if !strings.Contains(addr, ":") {
 		addr = ":" + addr
 	}
-	if !isLoopbackListenAddress(addr) && cfg.AdminPassword == "admin-demo" {
-		log.Fatal("refusing non-loopback listener with the default administrator password; set CGU_ADMIN_PASSWORD")
-	}
-	store := NewStoreWithPasswords(cfg.StudentPassword, cfg.AdminPassword)
+	store := NewStoreWithAdmin(cfg.AdminUsername, cfg.AdminPassword)
 	storageMode := "memory"
 	var database *sql.DB
 	if cfg.Database.Enabled {
