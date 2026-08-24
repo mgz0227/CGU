@@ -235,8 +235,16 @@ func TestOriginAllowedBehindTLSProxy(t *testing.T) {
 	if !server.originAllowed(request) {
 		t.Fatal("direct HTTPS Host port should match the canonical origin")
 	}
-	request.Host = "cgu.edu.kg"
 	request.TLS = nil
+	request.Header.Set("Origin", "http://cgu.edu.kg")
+	if server.originAllowed(request) {
+		t.Fatal("HTTP listener must not treat an explicit HTTPS port as its default port")
+	}
+	request.Host = "cgu.edu.kg:80"
+	if !server.originAllowed(request) {
+		t.Fatal("direct HTTP Host port should match the canonical origin")
+	}
+	request.Host = "cgu.edu.kg"
 
 	request.Header.Set("Origin", "https://foreign.example")
 	if server.originAllowed(request) {

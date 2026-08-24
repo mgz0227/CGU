@@ -1387,13 +1387,13 @@ func (s *Server) originAllowed(r *http.Request) bool {
 	// A direct HTTP/HTTPS listener can infer its own scheme. When TLS is
 	// terminated by a reverse proxy, operators must configure publicOrigin;
 	// never trust arbitrary forwarded headers for this security decision.
-	host, ok := normalizeRequestHost(r.Host)
-	if !ok {
-		return false
-	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
+	}
+	host, ok := normalizeRequestHost(r.Host, scheme)
+	if !ok {
+		return false
 	}
 	return strings.EqualFold(origin, scheme+"://"+host)
 }
@@ -1433,7 +1433,7 @@ func normalizeOrigin(raw string) (string, bool) {
 	return scheme + "://" + host, true
 }
 
-func normalizeRequestHost(raw string) (string, bool) {
+func normalizeRequestHost(raw, scheme string) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.ContainsAny(raw, "\r\n") {
 		return "", false
@@ -1450,7 +1450,7 @@ func normalizeRequestHost(raw string) (string, bool) {
 		return "", false
 	}
 	port := u.Port()
-	if port == "80" || port == "443" {
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
 		port = ""
 	}
 	host := hostname
