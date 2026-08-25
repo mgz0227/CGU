@@ -113,3 +113,9 @@ go test ./...
 go vet ./...
 go build -o dist/cgu.exe .
 ```
+
+发布或编辑 Release 时使用仓库内工具，正文会在提交前检查真实换行，并在 GitHub 接受后回读逐字验证，避免被错误编码成字面量 `\n`：
+
+```powershell
+./tools/New-CGURelease.ps1 -Tag v1.5.2 -NotesFile .\release-notes.md
+```

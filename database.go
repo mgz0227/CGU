@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 const schemaSQL = `
@@ -199,7 +200,7 @@ func ensureMailboxDeliveryColumns(ctx context.Context, db *sql.DB) error {
 		if count > 0 {
 			continue
 		}
-		if _, err := db.ExecContext(ctx, `ALTER TABLE cgu_mailbox_messages ADD COLUMN `+column.name+` `+column.def); err != nil {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE cgu_mailbox_messages ADD COLUMN `+column.name+` `+column.def); err != nil && !isDuplicateSchemaObject(err) {
 			return fmt.Errorf("add %s: %w", column.name, err)
 		}
 	}
@@ -208,11 +209,30 @@ func ensureMailboxDeliveryColumns(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if indexCount == 0 {
-		if _, err := db.ExecContext(ctx, `ALTER TABLE cgu_mailbox_messages ADD UNIQUE INDEX uq_mailbox_request_key (request_key)`); err != nil {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE cgu_mailbox_messages ADD UNIQUE INDEX uq_mailbox_request_key (request_key)`); err != nil && !isDuplicateSchemaObject(err) {
 			return fmt.Errorf("add mailbox request key index: %w", err)
 		}
 	}
 	return nil
+}
+
+// MySQL schema discovery and ALTER are intentionally separate so this
+// migration can run on more than one application instance. If another
+// instance wins the race between those statements, MySQL reports a duplicate
+// column or index; that outcome means the desired schema is already present.
+func isDuplicateSchemaObject(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	switch mysqlErr.Number {
+	case 1060, // ER_DUP_FIELDNAME
+		1061, // ER_DUP_KEYNAME
+		1831: // ER_DUP_INDEX
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) attachDatabase(db *sql.DB) error {

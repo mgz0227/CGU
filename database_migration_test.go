@@ -1,0 +1,65 @@
+package main
+
+import (
+	"context"
+	"regexp"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-sql-driver/mysql"
+)
+
+func TestEnsureMailboxDeliveryColumnsToleratesConcurrentDDL(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	columnQuery := regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`)
+	columns := []struct {
+		name string
+		def  string
+	}{
+		{name: "delivery_mode", def: "VARCHAR(32) NOT NULL DEFAULT 'internal'"},
+		{name: "external_recipient", def: "VARCHAR(255) NOT NULL DEFAULT ''"},
+		{name: "delivery_status", def: "VARCHAR(32) NOT NULL DEFAULT 'internal'"},
+		{name: "delivery_error", def: "TEXT NULL"},
+		{name: "delivered_at", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+		{name: "request_key", def: "VARCHAR(128) NULL"},
+		{name: "delivery_started_at", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		mock.ExpectQuery(columnQuery).
+			WithArgs("cgu_mailbox_messages", column.name).
+			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+		mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE cgu_mailbox_messages ADD COLUMN " + column.name + " " + column.def)).
+			WillReturnError(&mysql.MySQLError{Number: 1060, Message: "Duplicate column name"})
+	}
+
+	indexQuery := regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`)
+	mock.ExpectQuery(indexQuery).
+		WithArgs("cgu_mailbox_messages", "uq_mailbox_request_key").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE cgu_mailbox_messages ADD UNIQUE INDEX uq_mailbox_request_key (request_key)")).
+		WillReturnError(&mysql.MySQLError{Number: 1061, Message: "Duplicate key name"})
+
+	if err := ensureMailboxDeliveryColumns(context.Background(), db); err != nil {
+		t.Fatalf("concurrent migration should be idempotent: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIsDuplicateSchemaObjectRejectsOtherMySQLErrors(t *testing.T) {
+	if !isDuplicateSchemaObject(&mysql.MySQLError{Number: 1060}) {
+		t.Fatal("duplicate column error was not recognized")
+	}
+	if !isDuplicateSchemaObject(&mysql.MySQLError{Number: 1061}) {
+		t.Fatal("duplicate index error was not recognized")
+	}
+	if isDuplicateSchemaObject(&mysql.MySQLError{Number: 1045}) {
+		t.Fatal("unrelated MySQL error was ignored")
+	}
+}
