@@ -31,16 +31,17 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Enabled      bool   `json:"enabled"`
-	Driver       string `json:"driver"`
-	DSN          string `json:"dsn"`
-	Host         string `json:"host"`
-	Port         int    `json:"port"`
-	User         string `json:"user"`
-	Password     string `json:"password"`
-	Name         string `json:"name"`
-	MaxOpenConns int    `json:"maxOpenConns"`
-	MaxIdleConns int    `json:"maxIdleConns"`
+	Enabled             bool   `json:"enabled"`
+	AllowMemoryFallback bool   `json:"allowMemoryFallback"`
+	Driver              string `json:"driver"`
+	DSN                 string `json:"dsn"`
+	Host                string `json:"host"`
+	Port                int    `json:"port"`
+	User                string `json:"user"`
+	Password            string `json:"password"`
+	Name                string `json:"name"`
+	MaxOpenConns        int    `json:"maxOpenConns"`
+	MaxIdleConns        int    `json:"maxIdleConns"`
 }
 
 // SMTPConfig controls optional real-mail delivery. Internal mailbox storage is
@@ -143,6 +144,7 @@ func LoadConfig() AppConfig {
 	cfg.Database.Port = envInt(fileEnv, "CGU_DB_PORT", cfg.Database.Port)
 	cfg.Database.MaxOpenConns = envInt(fileEnv, "CGU_DB_MAX_OPEN", cfg.Database.MaxOpenConns)
 	cfg.Database.MaxIdleConns = envInt(fileEnv, "CGU_DB_MAX_IDLE", cfg.Database.MaxIdleConns)
+	cfg.Database.AllowMemoryFallback = envBool(fileEnv, "CGU_DB_ALLOW_MEMORY_FALLBACK", cfg.Database.AllowMemoryFallback)
 	databaseEnabledOverride := firstEnvWithFile(fileEnv, "CGU_DB_ENABLED")
 	cfg.Database.Enabled = envBool(fileEnv, "CGU_DB_ENABLED", cfg.Database.Enabled)
 	if databaseEnabledOverride == "" && !configDatabaseEnabledSet && !cfg.Database.Enabled && (cfg.Database.DSN != "" || (cfg.Database.User != "" && cfg.Database.Name != "")) {

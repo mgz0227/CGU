@@ -122,6 +122,16 @@ func TestAcademicHTTPFlow(t *testing.T) {
 	if got := store.siteContent["home.heroTitleLead"]; got == nil || got.Zh != "新的中文标题" || got.En != "A new English title" {
 		t.Fatalf("site content update was not stored: %#v", got)
 	}
+	reset := doJSON(t, client, http.MethodPut, server.URL+"/api/admin/site-content", map[string]string{
+		"key": "home.heroTitleLead", "zh": "", "en": "",
+	})
+	if reset.StatusCode != http.StatusOK {
+		t.Fatalf("site content reset status = %d", reset.StatusCode)
+	}
+	reset.Body.Close()
+	if got := store.siteContent["home.heroTitleLead"]; got == nil || got.Zh != "" || got.En != "" {
+		t.Fatalf("site content reset was not persisted: %#v", got)
+	}
 
 	for _, endpoint := range []string{"/api/auth/me", "/api/courses", "/api/enrollments", "/api/grades", "/api/schedule", "/api/announcements", "/api/admin/stats"} {
 		response, err = client.Get(server.URL + endpoint)
@@ -550,7 +560,7 @@ func TestStaticRoutes(t *testing.T) {
 	server := httptest.NewServer(NewServer(NewStoreWithAdmin(testAdminUsername, testAdminPassword), "web"))
 	defer server.Close()
 
-	for _, route := range []string{"/", "/login", "/portal", "/admin", "/login.html", "/portal.html", "/admin.html"} {
+	for _, route := range []string{"/", "/login", "/login/", "/portal", "/portal/", "/admin", "/admin/", "/calendar", "/calendar/", "/login.html", "/portal.html", "/admin.html", "/calendar.html"} {
 		response, err := http.Get(server.URL + route)
 		if err != nil {
 			t.Fatal(err)
@@ -558,7 +568,14 @@ func TestStaticRoutes(t *testing.T) {
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("static route %s status = %d", route, response.StatusCode)
 		}
+		body, err := io.ReadAll(response.Body)
 		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(route, "/") && !strings.Contains(string(body), `href="/portal.css"`) && !strings.Contains(string(body), `href="/styles.css"`) {
+			t.Fatalf("slash route %s did not use root-relative assets", route)
+		}
 	}
 	asset, err := http.Get(server.URL + "/portal.js")
 	if err != nil {
@@ -576,6 +593,30 @@ func TestStaticRoutes(t *testing.T) {
 		t.Fatalf("unknown static route status = %d", response.StatusCode)
 	}
 	response.Body.Close()
+}
+
+func TestPublicCourseCatalogDownload(t *testing.T) {
+	server := httptest.NewServer(NewServer(NewStoreWithAdmin(testAdminUsername, testAdminPassword), "web"))
+	defer server.Close()
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/catalog.csv?lang=en", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/csv") || !strings.Contains(response.Header.Get("Content-Disposition"), "cgu-course-catalog.csv") {
+		t.Fatalf("catalog response = status %d headers %#v", response.StatusCode, response.Header)
+	}
+	if !bytes.Contains(content, []byte("ELM101")) || !bytes.Contains(content, []byte("Name (English)")) {
+		t.Fatalf("catalog did not contain expected course data: %q", content)
+	}
 }
 
 func TestStoreContainsOnlyConfiguredBootstrapAdmin(t *testing.T) {
@@ -675,6 +716,181 @@ func TestSiteContentUpdateRollsBackWhenDatabaseWriteFails(t *testing.T) {
 	if got == nil || got.Zh != original.Zh || got.En != original.En {
 		t.Fatalf("failed database write changed in-memory content: %#v", got)
 	}
+}
+
+func TestAdminCourseAndAnnouncementKeepEditableFields(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	course, apiError := store.createCourse(CourseInput{
+		Code: "EDIT-101", NameZh: "可编辑课程", NameEn: "Editable Course", Department: "至冬研究学院",
+		Teacher: "测试教师", Term: "2026-秋", Credits: floatPtr(3), Capacity: intPtr(24), Type: "required",
+	})
+	if apiError != nil || course == nil || course.Department != "至冬研究学院" {
+		t.Fatalf("course department was not stored: course=%#v error=%#v", course, apiError)
+	}
+	updatedCourse, apiError := store.updateCourse(course.ID, CourseInput{NameZh: course.NameZh, Department: "枫丹工程学院"})
+	if apiError != nil || updatedCourse == nil || updatedCourse.Department != "枫丹工程学院" {
+		t.Fatalf("course department was not editable: course=%#v error=%#v", updatedCourse, apiError)
+	}
+	announcement, apiError := store.createAnnouncement(AnnouncementInput{
+		TitleZh: "双语公告", TitleEn: "Bilingual announcement", ContentZh: "中文正文", ContentEn: "English body", Published: boolPtr(false),
+	})
+	if apiError != nil || announcement == nil || announcement.ContentEn != "English body" || announcement.Published {
+		t.Fatalf("announcement fields were not stored: announcement=%#v error=%#v", announcement, apiError)
+	}
+	updatedAnnouncement, apiError := store.updateAnnouncement(announcement.ID, AnnouncementInput{ContentEn: "Updated English body", Published: boolPtr(true)})
+	if apiError != nil || updatedAnnouncement == nil || updatedAnnouncement.ContentEn != "Updated English body" || !updatedAnnouncement.Published {
+		t.Fatalf("announcement fields were not editable: announcement=%#v error=%#v", updatedAnnouncement, apiError)
+	}
+}
+
+func TestEditableCourseAndAnnouncementFieldsCanBeCleared(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	course, apiError := store.createCourse(CourseInput{
+		Code: "CLEAR-101", NameZh: "可清空课程", NameEn: "Clearable Course", Department: "至冬研究学院",
+		Teacher: "测试教师", Description: "课程说明", Term: "2026-秋", Type: "required",
+	})
+	if apiError != nil || course == nil {
+		t.Fatalf("create clearable course: course=%#v error=%#v", course, apiError)
+	}
+	clearedCourse, apiError := store.updateCourse(course.ID, CourseInput{
+		NameZh:      course.NameZh,
+		ClearFields: []string{"nameEn", "department", "teacher", "description", "term", "type"},
+	})
+	if apiError != nil || clearedCourse == nil {
+		t.Fatalf("clear course fields: course=%#v error=%#v", clearedCourse, apiError)
+	}
+	if clearedCourse.NameEn != "" || clearedCourse.Department != "" || clearedCourse.Teacher != "" || clearedCourse.Description != "" || clearedCourse.Term != "" || clearedCourse.Type != "" {
+		t.Fatalf("course clear fields were restored/defaulted: %#v", clearedCourse)
+	}
+
+	announcement, apiError := store.createAnnouncement(AnnouncementInput{
+		TitleZh: "可清空公告", TitleEn: "Clearable notice", ContentZh: "中文内容", ContentEn: "English content", Type: "RESEARCH",
+	})
+	if apiError != nil || announcement == nil {
+		t.Fatalf("create clearable announcement: announcement=%#v error=%#v", announcement, apiError)
+	}
+	clearedAnnouncement, apiError := store.updateAnnouncement(announcement.ID, AnnouncementInput{
+		TitleZh: announcement.TitleZh, ContentZh: announcement.ContentZh,
+		ClearFields: []string{"titleEn", "contentEn", "type", "publishedAt"},
+	})
+	if apiError != nil || clearedAnnouncement == nil {
+		t.Fatalf("clear announcement fields: announcement=%#v error=%#v", clearedAnnouncement, apiError)
+	}
+	if clearedAnnouncement.TitleEn != "" || clearedAnnouncement.ContentEn != "" || clearedAnnouncement.Type != "" || clearedAnnouncement.PublishedAt != "" {
+		t.Fatalf("announcement clear fields were restored/defaulted: %#v", clearedAnnouncement)
+	}
+}
+
+func TestAdmissionNotesAreEditableWithoutChangingDecision(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	application, apiError := store.createAdmission(AdmissionApplicationInput{Name: "备注申请人", Email: "notes@example.com", School: "综合学院"})
+	if apiError != nil {
+		t.Fatalf("create admission: %v", apiError)
+	}
+	updated, apiError := store.updateAdmission(application.ID, AdmissionApplicationInput{Notes: "已完成首次联系"})
+	if apiError != nil || updated == nil || updated.Notes != "已完成首次联系" || updated.Status != "pending" {
+		t.Fatalf("admission notes update = %#v, error=%#v", updated, apiError)
+	}
+	cleared, apiError := store.updateAdmission(application.ID, AdmissionApplicationInput{ClearNotes: boolPtr(true)})
+	if apiError != nil || cleared == nil || cleared.Notes != "" || cleared.Status != "pending" {
+		t.Fatalf("admission notes clear = %#v, error=%#v", cleared, apiError)
+	}
+}
+
+func TestAdmissionSchoolValuesAreCanonicalized(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	application, apiError := store.createAdmission(AdmissionApplicationInput{
+		Name: "至冬申请人", Email: "polar@example.com", School: "polar",
+	})
+	if apiError != nil || application == nil || application.School != "至冬研究与极地治理" {
+		t.Fatalf("stable school value was not canonicalized: application=%#v error=%#v", application, apiError)
+	}
+	english, apiError := store.createAdmission(AdmissionApplicationInput{
+		Name: "English applicant", Email: "polar-en@example.com", School: "Snezhnaya studies & polar governance",
+	})
+	if apiError != nil || english == nil || english.School != "至冬研究与极地治理" {
+		t.Fatalf("localized school value was not canonicalized: application=%#v error=%#v", english, apiError)
+	}
+}
+
+func TestDisabledStudentCannotAuthenticateAndSessionsAreRevoked(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	server := httptest.NewServer(NewServer(store, "web"))
+	defer server.Close()
+
+	adminJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminClient := &http.Client{Jar: adminJar}
+	login := postJSON(t, adminClient, server.URL+"/api/auth/login", map[string]string{"username": testAdminUsername, "password": testAdminPassword})
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", login.StatusCode)
+	}
+	login.Body.Close()
+	created := postJSON(t, adminClient, server.URL+"/api/admin/students", map[string]string{
+		"username": "disable-me", "name": "停用测试学生", "studentId": "CGU-DISABLE-001", "password": "disable-student-password-2026!",
+	})
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("student create status = %d", created.StatusCode)
+	}
+	var createdPayload struct {
+		Student AdminStudent `json:"student"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createdPayload); err != nil {
+		t.Fatal(err)
+	}
+	created.Body.Close()
+
+	studentJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	studentClient := &http.Client{Jar: studentJar}
+	studentLogin := postJSON(t, studentClient, server.URL+"/api/auth/login", map[string]string{"username": "disable-me", "password": "disable-student-password-2026!"})
+	if studentLogin.StatusCode != http.StatusOK {
+		t.Fatalf("student login status = %d", studentLogin.StatusCode)
+	}
+	studentLogin.Body.Close()
+
+	disabled := doJSON(t, adminClient, http.MethodPatch, server.URL+"/api/admin/students/"+url.PathEscape(createdPayload.Student.ID), map[string]any{"active": false})
+	if disabled.StatusCode != http.StatusOK {
+		t.Fatalf("disable student status = %d", disabled.StatusCode)
+	}
+	var disabledPayload struct {
+		Student AdminStudent `json:"student"`
+	}
+	if err := json.NewDecoder(disabled.Body).Decode(&disabledPayload); err != nil {
+		t.Fatal(err)
+	}
+	disabled.Body.Close()
+	if disabledPayload.Student.Active {
+		t.Fatalf("disabled student projection remained active: %#v", disabledPayload.Student)
+	}
+	me, err := studentClient.Get(server.URL + "/api/auth/me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if me.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked student session status = %d", me.StatusCode)
+	}
+	me.Body.Close()
+	newLogin := postJSON(t, &http.Client{}, server.URL+"/api/auth/login", map[string]string{"username": "disable-me", "password": "disable-student-password-2026!"})
+	if newLogin.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("disabled student login status = %d", newLogin.StatusCode)
+	}
+	newLogin.Body.Close()
+
+	enabled := doJSON(t, adminClient, http.MethodPatch, server.URL+"/api/admin/students/"+url.PathEscape(createdPayload.Student.ID), map[string]any{"active": true})
+	if enabled.StatusCode != http.StatusOK {
+		t.Fatalf("enable student status = %d", enabled.StatusCode)
+	}
+	enabled.Body.Close()
+	loginAgain := postJSON(t, &http.Client{}, server.URL+"/api/auth/login", map[string]string{"username": "disable-me", "password": "disable-student-password-2026!"})
+	if loginAgain.StatusCode != http.StatusOK {
+		t.Fatalf("re-enabled student login status = %d", loginAgain.StatusCode)
+	}
+	loginAgain.Body.Close()
 }
 
 func TestLoopbackListenerDetection(t *testing.T) {
@@ -926,6 +1142,133 @@ func TestAdminAcademicMutationRequiresCSRFHeader(t *testing.T) {
 	response.Body.Close()
 }
 
+func TestStudentPasswordRotationRevokesOtherSessions(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	student, apiError := store.createStudent(StudentInput{
+		Username: "password-student", Name: "密码测试学生", StudentID: "CGU-PASSWORD-001",
+		Password: "old-student-password-2026!",
+	})
+	if apiError != nil || student == nil {
+		t.Fatalf("student create = %#v, error = %#v", student, apiError)
+	}
+	server := httptest.NewServer(NewServer(store, "web"))
+	defer server.Close()
+	firstJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstClient := &http.Client{Jar: firstJar}
+	secondClient := &http.Client{Jar: secondJar}
+	for _, client := range []*http.Client{firstClient, secondClient} {
+		login := postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": student.Username, "password": "old-student-password-2026!"})
+		if login.StatusCode != http.StatusOK {
+			t.Fatalf("student login status = %d", login.StatusCode)
+		}
+		login.Body.Close()
+	}
+	wrong := postJSON(t, firstClient, server.URL+"/api/auth/password", map[string]string{"currentPassword": "wrong-current-password-2026!", "newPassword": "new-student-password-2026!", "confirmPassword": "new-student-password-2026!"})
+	if wrong.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong current password status = %d", wrong.StatusCode)
+	}
+	wrong.Body.Close()
+	mismatch := postJSON(t, firstClient, server.URL+"/api/auth/password", map[string]string{"currentPassword": "old-student-password-2026!", "newPassword": "new-student-password-2026!", "confirmPassword": "different-password-2026!"})
+	if mismatch.StatusCode != http.StatusBadRequest {
+		t.Fatalf("password mismatch status = %d", mismatch.StatusCode)
+	}
+	mismatch.Body.Close()
+	rotated := postJSON(t, firstClient, server.URL+"/api/auth/password", map[string]string{"currentPassword": "old-student-password-2026!", "newPassword": "new-student-password-2026!", "confirmPassword": "new-student-password-2026!"})
+	if rotated.StatusCode != http.StatusOK {
+		t.Fatalf("password rotation status = %d", rotated.StatusCode)
+	}
+	rotated.Body.Close()
+	otherSession, err := secondClient.Get(server.URL + "/api/auth/me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherSession.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("other session after rotation status = %d", otherSession.StatusCode)
+	}
+	otherSession.Body.Close()
+	oldLogin := postJSON(t, secondClient, server.URL+"/api/auth/login", map[string]string{"username": student.Username, "password": "old-student-password-2026!"})
+	if oldLogin.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old password login status = %d", oldLogin.StatusCode)
+	}
+	oldLogin.Body.Close()
+	newLogin := postJSON(t, secondClient, server.URL+"/api/auth/login", map[string]string{"username": student.StudentEmail, "password": "new-student-password-2026!"})
+	if newLogin.StatusCode != http.StatusOK {
+		t.Fatalf("new student mailbox login status = %d", newLogin.StatusCode)
+	}
+	newLogin.Body.Close()
+}
+
+func TestApprovedStudentIdentityCannotBeChanged(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	application, apiError := store.createAdmission(AdmissionApplicationInput{
+		Name: "录取身份锁定测试", Email: "identity-lock@example.com", School: "至冬与极地研究学院",
+	})
+	if apiError != nil {
+		t.Fatalf("create admission: %v", apiError)
+	}
+	approval, apiError := store.approveAdmission(application.ID, "admin")
+	if apiError != nil {
+		t.Fatalf("approve admission: %v", apiError)
+	}
+	student := store.users[approval.Student.ID]
+	if student == nil {
+		t.Fatal("approved student was not stored")
+	}
+	view := store.adminStudentView(student)
+	if !view.AdmissionApproved {
+		t.Fatalf("approved student projection was not marked immutable: %#v", view)
+	}
+	_, apiError = store.updateStudent(student.ID, StudentInput{StudentID: student.StudentID + "-CHANGED"})
+	if apiError == nil || apiError.Status != http.StatusConflict || apiError.Code != "student_identity_immutable" {
+		t.Fatalf("approved student id mutation error = %#v", apiError)
+	}
+	if student.StudentID != approval.Application.StudentID {
+		t.Fatalf("student id changed despite rejection: user=%q application=%q", student.StudentID, approval.Application.StudentID)
+	}
+}
+
+func TestAdmissionDeleteIsNotAWorkflowDecision(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	server := httptest.NewServer(NewServer(store, "web"))
+	defer server.Close()
+	created := postJSON(t, &http.Client{}, server.URL+"/api/admissions", map[string]string{"name": "保留审计申请", "email": "audit@example.com", "school": "综合学院"})
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("admission create status = %d", created.StatusCode)
+	}
+	var payload struct {
+		Application AdmissionApplication `json:"application"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	created.Body.Close()
+	adminJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminClient := &http.Client{Jar: adminJar}
+	login := postJSON(t, adminClient, server.URL+"/api/auth/login", map[string]string{"username": testAdminUsername, "password": testAdminPassword})
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", login.StatusCode)
+	}
+	login.Body.Close()
+	deleted := doJSON(t, adminClient, http.MethodDelete, server.URL+"/api/admin/admissions/"+url.PathEscape(payload.Application.ID), nil)
+	if deleted.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("admission delete status = %d", deleted.StatusCode)
+	}
+	deleted.Body.Close()
+	if len(store.admissions) != 1 {
+		t.Fatalf("admission audit row count = %d", len(store.admissions))
+	}
+}
+
 func TestAcademicMutationRollbackWhenDatabaseWriteFails(t *testing.T) {
 	closedDB, err := sql.Open("mysql", "cgu:cgu@tcp(127.0.0.1:1)/cgu")
 	if err != nil {
@@ -960,6 +1303,8 @@ func TestAcademicMutationRollbackWhenDatabaseWriteFails(t *testing.T) {
 }
 
 func intPtr(value int) *int { return &value }
+
+func floatPtr(value float64) *float64 { return &value }
 
 func doJSON(t *testing.T, client *http.Client, method, endpoint string, value any) *http.Response {
 	t.Helper()

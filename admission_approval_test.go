@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -272,18 +274,33 @@ func TestAdmissionApprovalAutomaticallySendsOnboardingNotice(t *testing.T) {
 	}
 }
 
-func TestAdmissionApprovalRejectsIncompleteAcceptedRecord(t *testing.T) {
+func TestAdmissionNoticeDeliveryToleratesMinimalReplayProjection(t *testing.T) {
+	store := NewStoreWithAdminAndDomain(testAdminUsername, testAdminPassword, "students.cgu.edu.kg")
+	server := NewServer(store, "web")
+	store.mailbox = append(store.mailbox, &MailboxMessage{
+		ID: "mail-minimal-replay", RecipientID: "missing-student", ExternalRecipient: "replay@example.com",
+		Subject: "Replay", Body: "Replay body", CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		DeliveryMode: mailboxDeliveryModeSMTP, DeliveryStatus: mailboxDeliveryPending,
+	})
+	result := &AdmissionApproval{MailboxID: "mail-minimal-replay"}
+	server.deliverAdmissionNotice(context.Background(), result)
+	if result.DeliveryStatus != mailboxDeliveryNotConfigured {
+		t.Fatalf("minimal replay delivery status = %q, want %q", result.DeliveryStatus, mailboxDeliveryNotConfigured)
+	}
+}
+
+func TestAdmissionApprovalRepairsIncompleteAcceptedRecord(t *testing.T) {
 	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
 	store.admissions = append(store.admissions, &AdmissionApplication{
 		ID: "application-incomplete", Name: "待修复申请", Email: "incomplete@example.com",
 		School: "综合学院", Status: "accepted", CreatedAt: "2026-08-25T00:00:00Z", UpdatedAt: "2026-08-25T00:00:00Z",
 	})
 	result, apiError := store.approveAdmission("application-incomplete", "admin")
-	if result != nil || apiError == nil || apiError.Code != "approval_incomplete" {
-		t.Fatalf("incomplete accepted record result=%#v error=%#v", result, apiError)
+	if apiError != nil || result == nil || result.Application.StudentID == "" || result.Student.ID == "" || result.InitialPassword == "" {
+		t.Fatalf("incomplete accepted record repair result=%#v error=%#v", result, apiError)
 	}
-	if len(store.users) != 1 || len(store.mailbox) != 0 {
-		t.Fatalf("incomplete accepted record created side effects: users=%d mailbox=%d", len(store.users), len(store.mailbox))
+	if len(store.users) != 2 || len(store.mailbox) != 1 || store.admissions[0].Status != "accepted" || store.admissions[0].StudentID == "" {
+		t.Fatalf("incomplete accepted record repair side effects: users=%d mailbox=%d application=%#v", len(store.users), len(store.mailbox), store.admissions[0])
 	}
 }
 
@@ -305,7 +322,7 @@ func TestAdmissionApprovalDatabaseTransactionAndReplay(t *testing.T) {
 		AddRow(applicationID, "数据库申请人", "db-applicant@example.com", "至冬学院", "pending", "", "2026-08-25T00:00:00Z", "2026-08-25T00:00:00Z", "", "", "", "")
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(admissionForUpdateSQL)).WithArgs(applicationID).WillReturnRows(row)
-	mock.ExpectExec(regexp.QuoteMeta(admissionApprovalUserInsertSQL)).WithArgs(userID, username, "数据库申请人", "db-applicant@example.com", "student", sqlmock.AnyArg(), studentID, "至冬学院", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(admissionApprovalUserInsertSQL)).WithArgs(userID, username, "数据库申请人", "db-applicant@example.com", "student", sqlmock.AnyArg(), studentID, "至冬学院", "2026", false).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(mailboxInsertSQL)).WithArgs(userIDToMailboxID(userID), userID, "admin", "CGU 教务处", "CGU 学生账户已建立", sqlmock.AnyArg(), sqlmock.AnyArg(), nil, mailboxDeliveryModeSMTP, "db-applicant@example.com", mailboxDeliveryPending, "", "", sqlmock.AnyArg(), "").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(admissionApprovalUpdateSQL)).WithArgs("accepted", studentID, sqlmock.AnyArg(), "admin", sqlmock.AnyArg(), sqlmock.AnyArg(), applicationID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -328,7 +345,7 @@ func TestAdmissionApprovalDatabaseTransactionAndReplay(t *testing.T) {
 	replayAdmissionRow := sqlmock.NewRows([]string{"id", "name_text", "email", "school_text", "status_name", "notes_text", "created_at", "updated_at", "student_id", "approved_at", "approved_by", "initial_password_issued_at"}).
 		AddRow(applicationID, "数据库申请人", "db-applicant@example.com", "至冬学院", "accepted", "", "2026-08-25T00:00:00Z", "2026-08-25T00:00:01Z", studentID, "2026-08-25T00:00:01Z", "admin", "2026-08-25T00:00:01Z")
 	mock.ExpectQuery(regexp.QuoteMeta(admissionForUpdateSQL)).WithArgs(applicationID).WillReturnRows(replayAdmissionRow)
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, username, name_text, email, role_name, password_hash, student_id, college, year_text FROM cgu_users WHERE student_id = ? AND role_name = 'student' LIMIT 1`)).WithArgs(studentID).WillReturnRows(sqlmock.NewRows([]string{"id", "username", "name_text", "email", "role_name", "password_hash", "student_id", "college", "year_text"}).AddRow(userID, username, "数据库申请人", "db-applicant@example.com", "student", hashPassword("not-returned"), studentID, "至冬学院", "2026"))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, username, name_text, email, role_name, password_hash, student_id, college, year_text, disabled_flag FROM cgu_users WHERE student_id = ? AND role_name = 'student' LIMIT 1`)).WithArgs(studentID).WillReturnRows(sqlmock.NewRows([]string{"id", "username", "name_text", "email", "role_name", "password_hash", "student_id", "college", "year_text", "disabled_flag"}).AddRow(userID, username, "数据库申请人", "db-applicant@example.com", "student", hashPassword("not-returned"), studentID, "至冬学院", "2026", false))
 	mock.ExpectCommit()
 	replay, apiError := store.approveAdmission(applicationID, "admin")
 	if apiError != nil || replay == nil || !replay.AlreadyApproved || replay.InitialPassword != "" {
@@ -356,7 +373,7 @@ func TestAdmissionApprovalDatabaseRollbackLeavesNoPartialRecords(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(admissionForUpdateSQL)).WithArgs(applicationID).WillReturnRows(sqlmock.NewRows([]string{"id", "name_text", "email", "school_text", "status_name", "notes_text", "created_at", "updated_at", "student_id", "approved_at", "approved_by", "initial_password_issued_at"}).
 		AddRow(applicationID, "回滚申请人", "rollback-approval@example.com", "综合学院", "pending", "", "2026-08-25T00:00:00Z", "2026-08-25T00:00:00Z", "", "", "", ""))
-	mock.ExpectExec(regexp.QuoteMeta(admissionApprovalUserInsertSQL)).WithArgs(userID, username, "回滚申请人", "rollback-approval@example.com", "student", sqlmock.AnyArg(), studentID, "综合学院", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(admissionApprovalUserInsertSQL)).WithArgs(userID, username, "回滚申请人", "rollback-approval@example.com", "student", sqlmock.AnyArg(), studentID, "综合学院", "2026", false).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(mailboxInsertSQL)).WillReturnError(sql.ErrNoRows)
 	mock.ExpectRollback()
 	result, apiError := store.approveAdmission(applicationID, "admin")

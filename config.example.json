@@ -6,6 +6,7 @@
   },
   "database": {
     "enabled": false,
+    "allowMemoryFallback": false,
     "driver": "mysql",
     "dsn": "",
     "host": "127.0.0.1",

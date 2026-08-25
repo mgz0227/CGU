@@ -94,7 +94,28 @@
       'home.viewProgram': '查看专业',
       'home.programsMore': '七国跨学科课程持续开放',
       'home.downloadCatalog': '下载完整课程目录',
-      'home.programDetailsSoon': '课程详情将在招生简章中展开。',
+      'home.programDetailKicker': 'CGU 专业详情',
+      'home.closeProgramDetails': '关闭专业详情',
+      'home.programCampusLabel': '校区',
+      'home.programDegreeLabel': '学位',
+      'home.programDurationLabel': '学制',
+      'home.programFocusLabel': '研究重点',
+      'home.programCurriculumLabel': '课程路径',
+      'home.programApply': '申请这个方向',
+      'home.programWindFocus': '风场观测、生态恢复与自由意志的边界研究，强调可复现的野外数据。',
+      'home.programWindCurriculum': '元素科学基础 · 风场与气候 · 风起地田野工作 · 科研方法。',
+      'home.programContractFocus': '港口治理、契约制度与跨区域贸易，训练在复杂规则中建立信任。',
+      'home.programContractCurriculum': '商业文明史 · 契约法与伦理 · 岩港经济 · 社会调研实践。',
+      'home.programDesignFocus': '在变化与永恒之间探索设计、公共空间与技术伦理。',
+      'home.programDesignCurriculum': '设计基础 · 永恒美学 · 工艺与原型 · 鸣神岛驻地项目。',
+      'home.programWisdomFocus': '把知识从终端带回真实生命现场，结合生物、认知与环境研究。',
+      'home.programWisdomCurriculum': '生命系统 · 认知与记忆 · 雨林生态 · 跨学科研究论文。',
+      'home.programJusticeFocus': '研究规则、能源与机械创造，连接法庭证据和工程实验。',
+      'home.programJusticeCurriculum': '法政基础 · 能源系统 · 机械文明实验 · 枫丹实习。',
+      'home.programFlameFocus': '以尊重当地知识为前提，研究部族、仪式、竞技与环境韧性。',
+      'home.programFlameCurriculum': '田野方法 · 竞技生态 · 社群协作 · 纳塔实践学期。',
+      'home.programPolarFocus': '面向至冬极地治理，研究冰原社会、风险伦理与远行基础设施。',
+      'home.programPolarCurriculum': '极地系统 · 风雪风险 · 至冬治理 · 7.0 远行研究项目。',
       'home.lifeKicker': 'BEYOND THE CLASSROOM',
       'home.lifeTitle': '校园动态',
       'home.viewAllNews': '查看原神官方新闻',
@@ -297,7 +318,29 @@
       'home.schoolUndecided': 'Still exploring',
       'home.submitApplication': 'Send application interest',
       'home.formNote': 'By submitting, you agree that CGU may use this information to contact you.',
-    'home.applicationReceived': 'Application interest received. Admissions will be in touch soon.',
+      'home.programDetailKicker': 'CGU PROGRAMME DETAIL',
+      'home.closeProgramDetails': 'Close programme details',
+      'home.programCampusLabel': 'Campus',
+      'home.programDegreeLabel': 'Award',
+      'home.programDurationLabel': 'Duration',
+      'home.programFocusLabel': 'Research focus',
+      'home.programCurriculumLabel': 'Curriculum path',
+      'home.programApply': 'Apply for this track',
+      'home.programWindFocus': 'Wind-field observation, ecological recovery, and the edge of free will, grounded in reproducible field data.',
+      'home.programWindCurriculum': 'Elemental science · Wind and climate · Windrise fieldwork · Research methods.',
+      'home.programContractFocus': 'Harbor governance, contract systems, and cross-region trade: building trust inside complex rules.',
+      'home.programContractCurriculum': 'Commercial history · Contract law and ethics · Liyue economy · Social research practice.',
+      'home.programDesignFocus': 'Design, public space, and technology ethics between change and eternity.',
+      'home.programDesignCurriculum': 'Design foundations · Eternity aesthetics · Craft and prototyping · Inazuma residency.',
+      'home.programWisdomFocus': 'Bring knowledge beyond the terminal into living systems through biology, cognition, and environmental study.',
+      'home.programWisdomCurriculum': 'Living systems · Cognition and memory · Rainforest ecology · Research thesis.',
+      'home.programJusticeFocus': 'Rules, energy, and mechanical invention at the intersection of courtroom evidence and engineering experiments.',
+      'home.programJusticeCurriculum': 'Public law · Energy systems · Mechanical civilization lab · Fontaine placement.',
+      'home.programFlameFocus': 'Study tribes, ritual, competition, and environmental resilience with respect for local knowledge.',
+      'home.programFlameCurriculum': 'Field methods · Competitive ecology · Community collaboration · Natlan practice term.',
+      'home.programPolarFocus': 'Polar governance for Snezhnaya: icebound societies, risk ethics, and travel infrastructure.',
+      'home.programPolarCurriculum': 'Polar systems · Snow risk · Snezhnaya governance · Version 7.0 field project.',
+      'home.applicationReceived': 'Application interest received. Admissions will be in touch soon.',
     'home.applicationError': 'The application could not be submitted. Try again later.'
     }
   };
@@ -398,6 +441,47 @@
     if (event.target === dialog) closeDialog();
   });
 
+  const programDialog = document.querySelector('#program-dialog');
+  const programDetails = {
+    'home.programWindTitle': { school: 'wind', campus: 'home.regionMondstadt', degree: 'home.degreeScience', duration: 'home.durationFour', lede: 'home.programWindDescription', focus: 'home.programWindFocus', curriculum: 'home.programWindCurriculum' },
+    'home.programContractTitle': { school: 'contract', campus: 'home.regionLiyue', degree: 'home.degreeBusiness', duration: 'home.durationFour', lede: 'home.programContractDescription', focus: 'home.programContractFocus', curriculum: 'home.programContractCurriculum' },
+    'home.programDesignTitle': { school: 'design', campus: 'home.regionInazuma', degree: 'home.degreeDesign', duration: 'home.durationFour', lede: 'home.programDesignDescription', focus: 'home.programDesignFocus', curriculum: 'home.programDesignCurriculum' },
+    'home.programWisdomTitle': { school: 'wisdom', campus: 'home.regionSumeru', degree: 'home.degreeLifeScience', duration: 'home.durationTwo', lede: 'home.programWisdomDescription', focus: 'home.programWisdomFocus', curriculum: 'home.programWisdomCurriculum' },
+    'home.programJusticeTitle': { school: 'justice', campus: 'home.regionFontaine', degree: 'home.degreeEngineering', duration: 'home.durationFour', lede: 'home.programJusticeDescription', focus: 'home.programJusticeFocus', curriculum: 'home.programJusticeCurriculum' },
+    'home.programFlameTitle': { school: 'flame', campus: 'home.regionNatlan', degree: 'home.degreeFieldwork', duration: 'home.durationFour', lede: 'home.programFlameDescription', focus: 'home.programFlameFocus', curriculum: 'home.programFlameCurriculum' },
+    'home.programPolarTitle': { school: 'polar', campus: 'home.regionSnezhnaya', degree: 'home.degreePolarStudies', duration: 'home.durationTwo', lede: 'home.programPolarDescription', focus: 'home.programPolarFocus', curriculum: 'home.programPolarCurriculum' }
+  };
+  let activeProgramKey = '';
+  const closeProgramDialog = () => programDialog?.close?.();
+  const renderProgramDialog = (key) => {
+    const detail = programDetails[key];
+    if (!detail || !programDialog) return;
+    activeProgramKey = key;
+    const setText = (selector, value) => { const node = programDialog.querySelector(selector); if (node) node.textContent = value; };
+    setText('[data-program-dialog-title]', translate(key));
+    setText('[data-program-dialog-lede]', translate(detail.lede));
+    setText('[data-program-dialog-campus]', translate(detail.campus));
+    setText('[data-program-dialog-degree]', translate(detail.degree));
+    setText('[data-program-dialog-duration]', translate(detail.duration));
+    setText('[data-program-dialog-focus]', translate(detail.focus));
+    setText('[data-program-dialog-curriculum]', translate(detail.curriculum));
+  };
+  const openProgramDialog = (key) => {
+    renderProgramDialog(key);
+    if (programDialog?.showModal) programDialog.showModal();
+    else programDialog?.setAttribute('open', '');
+  };
+  document.querySelector('[data-close-program]')?.addEventListener('click', closeProgramDialog);
+  programDialog?.addEventListener('click', (event) => { if (event.target === programDialog) closeProgramDialog(); });
+  document.querySelector('[data-program-dialog-apply]')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    const detail = programDetails[activeProgramKey];
+    closeProgramDialog();
+    const school = dialog?.querySelector('[name="school"]');
+    if (school && detail?.school) school.value = detail.school;
+    openDialog();
+  });
+
   const submitWithTimeout = async (url, options, timeout = 30000) => {
     if (!window.AbortController) return fetch(url, options);
     const controller = new AbortController();
@@ -417,6 +501,8 @@
       return;
     }
     const submit = form.querySelector('button[type="submit"]');
+    if (form.dataset.submitting === 'true') return;
+    form.dataset.submitting = 'true';
     if (submit) submit.disabled = true;
     try {
       const values = Object.fromEntries(new FormData(form).entries());
@@ -433,17 +519,20 @@
       form.reset();
       showToast(translate('home.applicationReceived'));
     } catch (error) {
-      showToast(error?.message || translate('home.applicationError'));
+      // Never surface raw transport or server diagnostics in the public UI.
+      // They are often English implementation details (for example
+      // AbortController messages) and may disclose internal information.
+      showToast(error?.name === 'AbortError' || error?.network
+        ? translate('home.applicationNetworkError')
+        : translate('home.applicationError'));
     } finally {
       if (submit) submit.disabled = false;
+      delete form.dataset.submitting;
     }
   });
 
   document.querySelectorAll('.program-detail').forEach((button) => {
-    button.addEventListener('click', () => {
-      const name = button.dataset.programKey ? translate(button.dataset.programKey) : button.dataset.program;
-      showToast(`${name}: ${translate('home.programDetailsSoon')}`);
-    });
+    button.addEventListener('click', () => openProgramDialog(button.dataset.programKey || ''));
   });
 
   const updateLocaleControls = () => {
@@ -462,7 +551,7 @@
   };
   applyManagedAssetsWhenReady();
   document.addEventListener('DOMContentLoaded', updateLocaleControls, { once: true });
-  window.addEventListener('cgu:localechange', () => { updateLocaleControls(); applyManagedAssets(); });
+  window.addEventListener('cgu:localechange', () => { updateLocaleControls(); applyManagedAssets(); if (activeProgramKey) renderProgramDialog(activeProgramKey); });
 
   const sections = [...document.querySelectorAll('main section[id]')];
   const navLinks = [...document.querySelectorAll('.desktop-nav a')];

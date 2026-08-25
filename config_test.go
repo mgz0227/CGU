@@ -64,6 +64,10 @@ func TestLoadConfigPrecedenceAndExplicitDatabaseDisable(t *testing.T) {
 	if !LoadConfig().Database.Enabled {
 		t.Fatal("process environment should override config and dotenv")
 	}
+	t.Setenv("CGU_DB_ALLOW_MEMORY_FALLBACK", "true")
+	if !LoadConfig().Database.AllowMemoryFallback {
+		t.Fatal("explicit memory fallback override was not loaded")
+	}
 }
 
 func TestLoadConfigSMTPPrecedence(t *testing.T) {

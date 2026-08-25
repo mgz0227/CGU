@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#10252b">
+    <meta name="description" content="CGU 校园日历" data-i18n-attr="content:calendar.metaDescription">
+    <title data-i18n="calendar.title">CGU 校园日历 | China Genshin University</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/calendar.css">
+    <script defer src="/i18n.js"></script>
+    <script defer src="/calendar.js"></script>
+  </head>
+  <body data-page="calendar">
+    <a class="skip-link" href="#calendar-main" data-i18n="calendar.skip">跳到主要内容</a>
+    <div class="utility-bar">
+      <div class="container utility-inner">
+        <span data-i18n="home.utilityBrand">CGU · CHINA GENSHIN UNIVERSITY</span>
+        <div class="utility-links"><a href="/" data-i18n="calendar.home">回到大学首页</a><a href="/login" data-i18n="home.login">登录门户</a></div>
+      </div>
+    </div>
+    <header class="calendar-header">
+      <div class="container calendar-header-inner">
+        <a class="brand" href="/" aria-label="CGU 原神大学首页" data-i18n-attr="aria-label:home.brandAria">
+          <span class="brand-mark" aria-hidden="true"><span class="brand-star"></span><span class="brand-orbit brand-orbit-one"></span><span class="brand-orbit brand-orbit-two"></span></span>
+          <span class="brand-copy"><strong data-i18n="brand.short">CGU</strong><small data-i18n="brand.name">原神大学</small></span>
+        </a>
+        <nav class="calendar-nav" aria-label="主导航" data-i18n-attr="aria-label:home.navAria"><a href="/" data-i18n="calendar.home">大学首页</a><a href="/portal" data-i18n="nav.portal">学生教务</a><a href="/admin" data-i18n="nav.admin">后台管理</a></nav>
+        <button class="language-toggle calendar-language" type="button" data-locale-toggle>English</button>
+      </div>
+    </header>
+    <main id="calendar-main" class="calendar-main">
+      <div class="container">
+        <div class="calendar-heading">
+          <div><p class="eyebrow" data-i18n="calendar.kicker">CAMPUS CALENDAR</p><h1 data-i18n="calendar.titleShort">校园日历</h1><p data-i18n="calendar.intro">查看由教务处发布的招生、课程与校园活动安排。</p></div>
+          <button class="button button-gold" type="button" data-calendar-refresh><span data-i18n="calendar.refresh">刷新日历</span><span aria-hidden="true">↻</span></button>
+        </div>
+        <div class="calendar-alert" data-calendar-alert role="status" aria-live="polite" hidden></div>
+        <div class="calendar-list" data-calendar-list><p class="empty-state" data-i18n="common.loading">加载中…</p></div>
+      </div>
+    </main>
+    <footer class="site-footer calendar-footer"><div class="container footer-bottom"><span>© <span data-calendar-year></span> CGU · <span data-i18n="brand.full">China Genshin University</span></span><span data-i18n="calendar.footer">公开日历 · 以后台发布内容为准</span></div></footer>
+  </body>
+</html>

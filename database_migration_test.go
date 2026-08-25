@@ -91,6 +91,28 @@ func TestEnsureAdmissionApprovalColumnsToleratesConcurrentDDL(t *testing.T) {
 	}
 }
 
+func TestEnsureUserDisabledColumnToleratesConcurrentDDL(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	columnQuery := regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`)
+	mock.ExpectQuery(columnQuery).
+		WithArgs("cgu_users", "disabled_flag").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE cgu_users ADD COLUMN disabled_flag TINYINT(1) NOT NULL DEFAULT 0")).
+		WillReturnError(&mysql.MySQLError{Number: 1060, Message: "Duplicate column name"})
+
+	if err := ensureUserDisabledColumn(context.Background(), db); err != nil {
+		t.Fatalf("concurrent users migration should be idempotent: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIsDuplicateSchemaObjectRejectsOtherMySQLErrors(t *testing.T) {
 	if !isDuplicateSchemaObject(&mysql.MySQLError{Number: 1060}) {
 		t.Fatal("duplicate column error was not recognized")

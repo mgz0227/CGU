@@ -5,10 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="CGU 原神大学学生教务门户" data-i18n-attr="content:portal.metaDescription">
     <title data-i18n="portal.pageTitle">CGU · 学生教务</title>
-    <link rel="icon" href="favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="portal.css">
-    <script src="i18n.js" defer></script>
-    <script src="portal.js" defer></script>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/portal.css">
+    <script src="/i18n.js" defer></script>
+    <script src="/portal.js" defer></script>
   </head>
   <body class="portal-shell app-page" data-page="portal">
     <a class="skip-link" href="#portal-main" data-i18n="common.skipMain">跳到主内容</a>
@@ -25,6 +25,7 @@
           <a href="#schedule" data-portal-nav="schedule" data-i18n="portal.schedule">课表</a>
           <a href="#announcements" data-portal-nav="announcements" data-i18n="portal.announcements">公告</a>
           <a href="#mailbox" data-portal-nav="mailbox" data-i18n="portal.mailbox">校内邮箱</a>
+          <a href="#profile" data-portal-nav="profile" data-i18n="portal.profile">个人资料</a>
         </nav>
         <div class="portal-header-actions">
           <button class="portal-language" type="button" data-locale-toggle>English</button>
@@ -40,6 +41,7 @@
         <a href="#schedule" data-portal-nav="schedule" data-i18n="portal.schedule">课表</a>
         <a href="#announcements" data-portal-nav="announcements" data-i18n="portal.announcements">公告</a>
         <a href="#mailbox" data-portal-nav="mailbox" data-i18n="portal.mailbox">校内邮箱</a>
+        <a href="#profile" data-portal-nav="profile" data-i18n="portal.profile">个人资料</a>
       </nav>
     </header>
 
@@ -99,6 +101,16 @@
       <section class="portal-section" id="profile" data-portal-section="profile" aria-labelledby="profile-heading">
         <div class="section-heading-inline"><div><p class="portal-kicker" data-i18n="portal.accountKicker">ACCOUNT</p><h2 id="profile-heading" data-i18n="portal.profile">个人资料</h2></div></div>
         <div class="profile-card"><div class="profile-avatar" data-user-initials>CGU</div><div class="profile-fields"><div><span data-i18n="portal.studentId">学号</span><strong data-profile="studentId">—</strong></div><div><span data-i18n="login.account">账号</span><strong data-profile="username">—</strong></div><div><span data-i18n="portal.email">邮箱</span><strong data-profile="email">—</strong></div><div><span data-i18n="portal.studentEmail">学生邮箱</span><strong data-profile="studentEmail">—</strong></div><div><span data-i18n="portal.college">学院</span><strong data-profile="college">—</strong></div><div><span data-i18n="portal.year">年级</span><strong data-profile="year">—</strong></div></div></div>
+        <div class="profile-security">
+          <div><p class="portal-kicker" data-i18n="portal.securityKicker">ACCOUNT SECURITY</p><h3 data-i18n="portal.changePassword">修改密码</h3><p class="admin-section-help" data-i18n="portal.changePasswordHelp">验证当前密码后设置新密码；其他已登录设备会自动退出。</p></div>
+          <form class="portal-form password-form" data-password-form novalidate>
+            <label><span data-i18n="portal.currentPassword">当前密码</span><input name="currentPassword" type="password" autocomplete="current-password" minlength="12" required data-i18n-attr="placeholder:portal.currentPasswordPlaceholder"></label>
+            <label><span data-i18n="portal.newPassword">新密码</span><input name="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required data-i18n-attr="placeholder:portal.newPasswordPlaceholder"></label>
+            <label><span data-i18n="portal.confirmPassword">确认新密码</span><input name="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required data-i18n-attr="placeholder:portal.confirmPasswordPlaceholder"></label>
+            <div class="form-alert" data-password-alert role="alert" aria-live="polite"></div>
+            <button class="portal-button portal-button-gold" type="submit" data-password-submit><span data-i18n="portal.savePassword">保存新密码</span><span aria-hidden="true">→</span></button>
+          </form>
+        </div>
       </section>
     </main>
 

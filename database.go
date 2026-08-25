@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS cgu_users (
   student_id VARCHAR(128) NOT NULL DEFAULT '',
   college VARCHAR(255) NOT NULL DEFAULT '',
   year_text VARCHAR(32) NOT NULL DEFAULT '',
+  disabled_flag TINYINT(1) NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS cgu_courses (
@@ -195,6 +196,24 @@ func migrateDatabase(ctx context.Context, db *sql.DB) error {
 	if err := ensureAdmissionApprovalColumns(ctx, db); err != nil {
 		return fmt.Errorf("database admissions migration: %w", err)
 	}
+	if err := ensureUserDisabledColumn(ctx, db); err != nil {
+		return fmt.Errorf("database users migration: %w", err)
+	}
+	return nil
+}
+
+// ensureUserDisabledColumn upgrades installations created before the admin
+// account lifecycle controls were introduced. Existing users remain active.
+func ensureUserDisabledColumn(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`, "cgu_users", "disabled_flag").Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE cgu_users ADD COLUMN disabled_flag TINYINT(1) NOT NULL DEFAULT 0`); err != nil && !isDuplicateSchemaObject(err) {
+			return fmt.Errorf("add disabled_flag: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -352,7 +371,7 @@ func (s *Store) ensureDatabaseSeedLocked(ctx context.Context) error {
 	if err == nil {
 		return fmt.Errorf("bootstrap administrator username is already assigned to another account")
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE username=VALUES(username), name_text=VALUES(name_text), email=VALUES(email), role_name=VALUES(role_name), password_hash=VALUES(password_hash), student_id=VALUES(student_id), college=VALUES(college), year_text=VALUES(year_text)`, admin.ID, admin.Username, admin.Name, admin.Email, admin.Role, admin.PasswordHash, admin.StudentID, admin.College, admin.Year); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text, disabled_flag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE username=VALUES(username), name_text=VALUES(name_text), email=VALUES(email), role_name=VALUES(role_name), password_hash=VALUES(password_hash), student_id=VALUES(student_id), college=VALUES(college), year_text=VALUES(year_text)`, admin.ID, admin.Username, admin.Name, admin.Email, admin.Role, admin.PasswordHash, admin.StudentID, admin.College, admin.Year, false); err != nil {
 		return fmt.Errorf("upsert bootstrap administrator: %w", err)
 	}
 	if err := s.seedCoursesLocked(ctx); err != nil {
@@ -450,7 +469,7 @@ func (s *Store) loadDatabaseLocked(ctx context.Context) error {
 }
 
 func loadUsers(ctx context.Context, db *sql.DB) (map[string]*User, error) {
-	rows, err := db.QueryContext(ctx, "SELECT id, username, name_text, email, role_name, password_hash, student_id, college, year_text FROM cgu_users")
+	rows, err := db.QueryContext(ctx, "SELECT id, username, name_text, email, role_name, password_hash, student_id, college, year_text, disabled_flag FROM cgu_users")
 	if err != nil {
 		return nil, err
 	}
@@ -458,7 +477,7 @@ func loadUsers(ctx context.Context, db *sql.DB) (map[string]*User, error) {
 	result := make(map[string]*User)
 	for rows.Next() {
 		item := &User{}
-		if err := rows.Scan(&item.ID, &item.Username, &item.Name, &item.Email, &item.Role, &item.PasswordHash, &item.StudentID, &item.College, &item.Year); err != nil {
+		if err := rows.Scan(&item.ID, &item.Username, &item.Name, &item.Email, &item.Role, &item.PasswordHash, &item.StudentID, &item.College, &item.Year, &item.Disabled); err != nil {
 			return nil, err
 		}
 		result[item.ID] = item
@@ -700,7 +719,7 @@ func (s *Store) persistUserLockedErr(item *User) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE username=VALUES(username), password_hash=VALUES(password_hash), name_text=VALUES(name_text), email=VALUES(email), role_name=VALUES(role_name), student_id=VALUES(student_id), college=VALUES(college), year_text=VALUES(year_text)`, item.ID, item.Username, item.Name, item.Email, item.Role, item.PasswordHash, item.StudentID, item.College, item.Year)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text, disabled_flag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE username=VALUES(username), password_hash=VALUES(password_hash), name_text=VALUES(name_text), email=VALUES(email), role_name=VALUES(role_name), student_id=VALUES(student_id), college=VALUES(college), year_text=VALUES(year_text), disabled_flag=VALUES(disabled_flag)`, item.ID, item.Username, item.Name, item.Email, item.Role, item.PasswordHash, item.StudentID, item.College, item.Year, item.Disabled)
 	return err
 }
 
@@ -807,7 +826,7 @@ func (s *Store) persistAdmissionWithNotificationLocked(admission *AdmissionAppli
 
 const admissionForUpdateSQL = `SELECT id, name_text, email, school_text, status_name, notes_text, created_at, updated_at, student_id, approved_at, approved_by, initial_password_issued_at FROM cgu_admissions WHERE id = ? FOR UPDATE`
 
-const admissionApprovalUserInsertSQL = `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const admissionApprovalUserInsertSQL = `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text, disabled_flag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 const admissionApprovalUpdateSQL = `UPDATE cgu_admissions SET status_name = ?, student_id = ?, approved_at = ?, approved_by = ?, initial_password_issued_at = ?, updated_at = ? WHERE id = ?`
 
@@ -818,7 +837,7 @@ func persistAdmissionApprovalTx(ctx context.Context, tx *sql.Tx, application *Ad
 	if application == nil || student == nil || mailbox == nil {
 		return errors.New("admission approval records are required")
 	}
-	if _, err := tx.ExecContext(ctx, admissionApprovalUserInsertSQL, student.ID, student.Username, student.Name, student.Email, student.Role, student.PasswordHash, student.StudentID, student.College, student.Year); err != nil {
+	if _, err := tx.ExecContext(ctx, admissionApprovalUserInsertSQL, student.ID, student.Username, student.Name, student.Email, student.Role, student.PasswordHash, student.StudentID, student.College, student.Year, student.Disabled); err != nil {
 		return err
 	}
 	deliveryMode := strings.TrimSpace(mailbox.DeliveryMode)
