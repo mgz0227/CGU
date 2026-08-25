@@ -322,8 +322,11 @@
   const newRequestKey = () => {
     if (window.crypto?.randomUUID) return window.crypto.randomUUID();
     const bytes = new Uint8Array(16);
-    window.crypto?.getRandomValues?.(bytes);
-    return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('') || `${Date.now()}-${Math.random()}`;
+    if (window.crypto?.getRandomValues) {
+      window.crypto.getRandomValues(bytes);
+      return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+    }
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
   };
 
   const handleLogin = () => {
@@ -950,7 +953,12 @@
       try {
         const result = await adminRequest('/admin/mailbox', 'POST', mailboxPayload(form));
         const message = normalizeAdminMailbox(result?.message || result);
-        state.adminMailbox.unshift(message);
+        if (result?.replayed) {
+          state.adminMailbox = state.adminMailbox.map((item) => String(item.id) === String(message.id) ? message : item);
+          if (!state.adminMailbox.some((item) => String(item.id) === String(message.id))) state.adminMailbox.unshift(message);
+        } else {
+          state.adminMailbox.unshift(message);
+        }
         delete form.dataset.mailboxRequestKey;
         form.reset();
         renderAdmin();

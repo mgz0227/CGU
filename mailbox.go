@@ -249,7 +249,7 @@ func (s *Store) claimMailboxDeliveryLocked(item *MailboxMessage, previousStatus 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	startedAt := time.Now().UTC().Format(time.RFC3339)
+	startedAt := time.Now().UTC().Format(time.RFC3339Nano) + "|" + randomID(8)
 	item.DeliveryStartedAt = startedAt
 	result, err := s.db.ExecContext(ctx, `UPDATE cgu_mailbox_messages SET delivery_status = ?, delivery_error = '', delivered_at = '', delivery_started_at = ? WHERE id = ? AND delivery_status = ?`, mailboxDeliverySending, startedAt, item.ID, previousStatus)
 	if err != nil {
@@ -304,24 +304,28 @@ func (s *Store) findMailboxByRequestKeyLocked(requestKey string) (*MailboxMessag
 	return item, nil
 }
 
-func (s *Store) updateMailboxDelivery(id, status, deliveryError, deliveredAt string) (*MailboxMessage, *apiError) {
+func (s *Store) updateMailboxDelivery(id, attemptStartedAt, status, deliveryError, deliveredAt string) (*MailboxMessage, *apiError) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, item := range s.mailbox {
 		if item == nil || !strings.EqualFold(item.ID, strings.TrimSpace(id)) {
 			continue
 		}
+		if strings.TrimSpace(item.DeliveryStartedAt) != strings.TrimSpace(attemptStartedAt) {
+			return nil, apiErr(http.StatusConflict, "delivery_state_changed", "delivery state changed before the result could be saved")
+		}
 		previous := *item
 		item.DeliveryStatus = strings.TrimSpace(status)
 		item.DeliveryError = strings.TrimSpace(deliveryError)
 		item.DeliveredAt = strings.TrimSpace(deliveredAt)
-		if err := s.persistMailboxOutcomeLocked(item, mailboxDeliverySending); err != nil {
+		if err := s.persistMailboxOutcomeLocked(item, mailboxDeliverySending, attemptStartedAt); err != nil {
 			*item = previous
 			if errors.Is(err, errMailboxDeliveryClaimed) {
 				return nil, apiErr(http.StatusConflict, "delivery_state_changed", "delivery state changed before the result could be saved")
 			}
 			return nil, apiErr(http.StatusServiceUnavailable, "mailbox_persistence_failed", "delivery status could not be saved")
 		}
+		item.DeliveryStartedAt = ""
 		copy := s.mailboxAdminViewLocked(item)
 		return &copy, nil
 	}
@@ -348,14 +352,17 @@ func (s *Store) beginMailboxDeliveryWithConfirmation(id string, confirmUnknown b
 			}
 		}
 		if item.DeliveryStatus == mailboxDeliverySending && mailboxDeliveryLeaseExpired(item.DeliveryStartedAt) {
+			previous := *item
+			previousStartedAt := item.DeliveryStartedAt
 			item.DeliveryStatus = mailboxDeliveryUnknown
 			item.DeliveryError = "SMTP outcome unknown after an expired delivery lease; confirm the relay did not accept it before retrying"
-			item.DeliveryStartedAt = ""
 			if s.db != nil {
-				if err := s.persistMailboxOutcomeLocked(item, mailboxDeliverySending); err != nil {
+				if err := s.persistMailboxOutcomeLocked(item, mailboxDeliverySending, previousStartedAt); err != nil {
+					*item = previous
 					return nil, apiErr(http.StatusServiceUnavailable, "mailbox_persistence_failed", "expired delivery state could not be recovered")
 				}
 			}
+			item.DeliveryStartedAt = ""
 		}
 		switch item.DeliveryStatus {
 		case mailboxDeliverySent:
@@ -393,7 +400,10 @@ func mailboxDeliveryLeaseExpired(startedAt string) bool {
 	if startedAt == "" {
 		return true
 	}
-	value, err := time.Parse(time.RFC3339, startedAt)
+	if separator := strings.IndexByte(startedAt, '|'); separator >= 0 {
+		startedAt = startedAt[:separator]
+	}
+	value, err := time.Parse(time.RFC3339Nano, startedAt)
 	return err != nil || time.Since(value) > mailboxDeliveryLease
 }
 
@@ -423,21 +433,28 @@ func (s *Store) refreshMailboxDeliveryLocked(item *MailboxMessage) error {
 	return nil
 }
 
-func (s *Store) markMailboxDeliveryUnknown(id, message string) (*MailboxMessage, error) {
+func (s *Store) markMailboxDeliveryUnknown(id, message, attemptStartedAt string) (*MailboxMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, item := range s.mailbox {
 		if item == nil || !strings.EqualFold(item.ID, strings.TrimSpace(id)) {
 			continue
 		}
+		if strings.TrimSpace(item.DeliveryStartedAt) != strings.TrimSpace(attemptStartedAt) {
+			return nil, errMailboxDeliveryClaimed
+		}
+		previous := *item
 		item.DeliveryStatus = mailboxDeliveryUnknown
 		item.DeliveryError = strings.TrimSpace(message)
 		item.DeliveredAt = ""
 		// Keep the in-memory state conservative even if the database is
 		// temporarily unavailable, and make a best-effort durable write.
-		persistErr := s.persistMailboxOutcomeLocked(item, mailboxDeliverySending)
+		persistErr := s.persistMailboxOutcomeLocked(item, mailboxDeliverySending, attemptStartedAt)
 		if persistErr != nil {
+			*item = previous
 			log.Printf("CGU mailbox delivery status durability warning (%T)", persistErr)
+		} else {
+			item.DeliveryStartedAt = ""
 		}
 		copy := s.mailboxAdminViewLocked(item)
 		return &copy, persistErr
@@ -445,13 +462,19 @@ func (s *Store) markMailboxDeliveryUnknown(id, message string) (*MailboxMessage,
 	return nil, nil
 }
 
-func (s *Store) persistMailboxOutcomeLocked(item *MailboxMessage, expectedStatus string) error {
+func (s *Store) persistMailboxOutcomeLocked(item *MailboxMessage, expectedStatus, expectedStartedAt string) error {
 	if item == nil || s.db == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	result, err := s.db.ExecContext(ctx, `UPDATE cgu_mailbox_messages SET delivery_status = ?, delivery_error = ?, delivered_at = ?, delivery_started_at = '' WHERE id = ? AND delivery_status = ?`, item.DeliveryStatus, item.DeliveryError, item.DeliveredAt, item.ID, expectedStatus)
+	var result sql.Result
+	var err error
+	if strings.TrimSpace(expectedStartedAt) == "" {
+		result, err = s.db.ExecContext(ctx, `UPDATE cgu_mailbox_messages SET delivery_status = ?, delivery_error = ?, delivered_at = ?, delivery_started_at = '' WHERE id = ? AND delivery_status = ? AND delivery_started_at = ''`, item.DeliveryStatus, item.DeliveryError, item.DeliveredAt, item.ID, expectedStatus)
+	} else {
+		result, err = s.db.ExecContext(ctx, `UPDATE cgu_mailbox_messages SET delivery_status = ?, delivery_error = ?, delivered_at = ?, delivery_started_at = '' WHERE id = ? AND delivery_status = ? AND delivery_started_at = ?`, item.DeliveryStatus, item.DeliveryError, item.DeliveredAt, item.ID, expectedStatus, expectedStartedAt)
+	}
 	if err != nil {
 		return err
 	}
@@ -603,12 +626,12 @@ func (s *Server) sendAdminMailbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if item.DeliveryMode == mailboxDeliveryModeSMTP {
 		status, deliveryError, deliveredAt := s.deliverMailboxExternally(r.Context(), item)
-		if updated, statusError := s.store.updateMailboxDelivery(item.ID, status, deliveryError, deliveredAt); statusError == nil {
+		if updated, statusError := s.store.updateMailboxDelivery(item.ID, item.DeliveryStartedAt, status, deliveryError, deliveredAt); statusError == nil {
 			item = updated
 		} else {
 			// The relay may already have accepted the message. Do not report a
 			// retryable failure while the durable outcome is unknown.
-			if unknown, persistErr := s.store.markMailboxDeliveryUnknown(item.ID, "SMTP outcome unknown; delivery status could not be saved"); unknown != nil {
+			if unknown, persistErr := s.store.markMailboxDeliveryUnknown(item.ID, "SMTP outcome unknown; delivery status could not be saved", item.DeliveryStartedAt); unknown != nil {
 				item = unknown
 				if persistErr != nil {
 					log.Printf("CGU mailbox unknown outcome remains process-local (%T)", persistErr)
@@ -636,9 +659,9 @@ func (s *Server) retryAdminMailbox(w http.ResponseWriter, r *http.Request, id st
 		return
 	}
 	status, deliveryError, deliveredAt := s.deliverMailboxExternally(r.Context(), item)
-	updated, statusError := s.store.updateMailboxDelivery(item.ID, status, deliveryError, deliveredAt)
+	updated, statusError := s.store.updateMailboxDelivery(item.ID, item.DeliveryStartedAt, status, deliveryError, deliveredAt)
 	if statusError != nil {
-		if unknown, persistErr := s.store.markMailboxDeliveryUnknown(item.ID, "SMTP outcome unknown; delivery status could not be saved"); unknown != nil {
+		if unknown, persistErr := s.store.markMailboxDeliveryUnknown(item.ID, "SMTP outcome unknown; delivery status could not be saved", item.DeliveryStartedAt); unknown != nil {
 			item = unknown
 			if persistErr != nil {
 				log.Printf("CGU mailbox unknown outcome remains process-local (%T)", persistErr)

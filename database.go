@@ -652,6 +652,11 @@ func (s *Store) persistAdmissionLocked(item *AdmissionApplication) error {
 	return err
 }
 
+// mailboxInsertSQL is intentionally a plain INSERT. request_key is a unique
+// idempotency key, so an upsert here would overwrite a message when another
+// process handles the same request before its local cache is populated.
+const mailboxInsertSQL = `INSERT INTO cgu_mailbox_messages (id, recipient_id, sender_id, sender_name, subject_text, body_text, created_at, read_at, delivery_mode, external_recipient, delivery_status, delivery_error, delivered_at, request_key, delivery_started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
 func (s *Store) persistMailboxLocked(item *MailboxMessage) error {
 	if s.db == nil || item == nil {
 		return nil
@@ -666,7 +671,7 @@ func (s *Store) persistMailboxLocked(item *MailboxMessage) error {
 	if deliveryStatus == "" {
 		deliveryStatus = mailboxDeliveryInternal
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_mailbox_messages (id, recipient_id, sender_id, sender_name, subject_text, body_text, created_at, read_at, delivery_mode, external_recipient, delivery_status, delivery_error, delivered_at, request_key, delivery_started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE recipient_id=VALUES(recipient_id), sender_id=VALUES(sender_id), sender_name=VALUES(sender_name), subject_text=VALUES(subject_text), body_text=VALUES(body_text), created_at=VALUES(created_at), read_at=VALUES(read_at), delivery_mode=VALUES(delivery_mode), external_recipient=VALUES(external_recipient), delivery_status=VALUES(delivery_status), delivery_error=VALUES(delivery_error), delivered_at=VALUES(delivered_at), request_key=VALUES(request_key), delivery_started_at=VALUES(delivery_started_at)`, item.ID, item.RecipientID, item.SenderID, item.SenderName, item.Subject, item.Body, item.CreatedAt, nullableString(item.ReadAt), deliveryMode, item.ExternalRecipient, deliveryStatus, item.DeliveryError, item.DeliveredAt, nullableString(item.RequestKey), item.DeliveryStartedAt)
+	_, err := s.db.ExecContext(ctx, mailboxInsertSQL, item.ID, item.RecipientID, item.SenderID, item.SenderName, item.Subject, item.Body, item.CreatedAt, nullableString(item.ReadAt), deliveryMode, item.ExternalRecipient, deliveryStatus, item.DeliveryError, item.DeliveredAt, nullableString(item.RequestKey), item.DeliveryStartedAt)
 	return err
 }
 
