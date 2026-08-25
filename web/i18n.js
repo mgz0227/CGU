@@ -10,6 +10,7 @@
       'nav.admin': '后台管理',
       'nav.logout': '退出登录',
       'nav.language': 'English',
+      'nav.languageShort': 'EN',
       'nav.menu': '打开菜单',
       'nav.close': '关闭菜单',
       'login.pageTitle': 'CGU · 登录',
@@ -38,6 +39,15 @@
       'common.mobileNav': '移动端导航',
       'common.termFilter': '学期',
       'common.courseTypeFilter': '课程类型',
+      'common.notAvailable': '—',
+      'common.networkError': '网络连接失败，请稍后重试。',
+      'common.apiUnavailable': '教务服务暂时不可用，请稍后重试。',
+      'common.typeAdmissions': '招生',
+      'common.typeAcademics': '教务',
+      'common.typeCampus': '校园',
+      'common.typeResearch': '研究',
+      'common.typeWorldUpdate': '世界动态',
+      'common.typeNotice': '通知',
       'admin.termPlaceholder': '2026 秋季',
       'portal.pageTitle': 'CGU · 学生教务',
       'portal.metaDescription': 'CGU 原神大学学生教务门户',
@@ -128,6 +138,15 @@
       'admin.title': '教务管理台',
       'admin.subtitle': '维护课程、公告与校园学术信息。',
       'admin.overview': '总览',
+      'admin.notifications': '通知中心',
+      'admin.notificationKicker': 'ADMINISTRATIVE INBOX',
+      'admin.notificationHelp': '新的招生申请会在这里生成持久化通知；标记已读后状态会保留。',
+      'admin.notificationCount': '{count} 条未读通知',
+      'admin.notificationAdmissions': '招生申请提醒',
+      'admin.notificationOpenAdmissions': '查看招生申请',
+      'admin.notificationMarkRead': '标记为已读',
+      'admin.notificationMarkedRead': '通知已标记为已读。',
+      'admin.noNotifications': '暂无待处理通知。',
       'admin.courses': '课程管理',
       'admin.students': '学生目录',
       'admin.academic': '成绩与课表',
@@ -282,6 +301,7 @@
       'nav.admin': 'Administration',
       'nav.logout': 'Sign out',
       'nav.language': '中文',
+      'nav.languageShort': '中',
       'nav.menu': 'Open menu',
       'nav.close': 'Close menu',
       'login.pageTitle': 'CGU · Sign in',
@@ -310,6 +330,15 @@
       'common.mobileNav': 'Mobile navigation',
       'common.termFilter': 'Term',
       'common.courseTypeFilter': 'Course type',
+      'common.notAvailable': '—',
+      'common.networkError': 'The network request failed. Try again later.',
+      'common.apiUnavailable': 'The academic service is temporarily unavailable. Try again later.',
+      'common.typeAdmissions': 'Admissions',
+      'common.typeAcademics': 'Academics',
+      'common.typeCampus': 'Campus',
+      'common.typeResearch': 'Research',
+      'common.typeWorldUpdate': 'World update',
+      'common.typeNotice': 'Notice',
       'admin.termPlaceholder': 'Autumn 2026',
       'portal.pageTitle': 'CGU · Student portal',
       'portal.metaDescription': 'China Genshin University student portal',
@@ -400,6 +429,15 @@
       'admin.title': 'Academic administration',
       'admin.subtitle': 'Maintain courses, announcements, and academic information.',
       'admin.overview': 'Overview',
+      'admin.notifications': 'Notifications',
+      'admin.notificationKicker': 'ADMINISTRATIVE INBOX',
+      'admin.notificationHelp': 'New admissions applications create durable notifications here; read state is retained.',
+      'admin.notificationCount': '{count} unread notifications',
+      'admin.notificationAdmissions': 'Admissions application',
+      'admin.notificationOpenAdmissions': 'View admissions',
+      'admin.notificationMarkRead': 'Mark as read',
+      'admin.notificationMarkedRead': 'Notification marked as read.',
+      'admin.noNotifications': 'No pending notifications.',
       'admin.courses': 'Course management',
       'admin.students': 'Student directory',
       'admin.academic': 'Grades & schedule',
@@ -754,16 +792,35 @@
     'link.footerEmail': 'mailto:hello@cgu-university.example'
   };
 
+  const fetchWithTimeout = async (input, init = {}, timeout = 1500) => {
+    if (!window.AbortController) return fetch(input, init);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeout);
+    try {
+      return await fetch(input, { ...init, signal: controller.signal });
+    } finally {
+      window.clearTimeout(timer);
+    }
+  };
+
   const getInitialLocale = () => {
     const saved = window.localStorage?.getItem(STORAGE_KEY);
     if (saved === 'zh' || saved === 'en') return saved;
     const languages = Array.isArray(navigator.languages) && navigator.languages.length
       ? navigator.languages
       : [navigator.language];
-    return languages.some((language) => /^zh(?:-|$)/i.test(language || '')) ? 'zh' : 'en';
+    // Respect the browser's ordered preference list; do not let a lower-priority
+    // fallback language override the user's primary language.
+    for (const language of languages) {
+      if (/^zh(?:-|$)/i.test(language || '')) return 'zh';
+      if (/^en(?:-|$)/i.test(language || '')) return 'en';
+    }
+    return 'en';
   };
 
   let locale = getInitialLocale();
+  document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
+  document.documentElement.dataset.locale = locale;
 
   const mergeSiteContent = (items) => {
     (Array.isArray(items) ? items : []).forEach((item) => {
@@ -774,7 +831,7 @@
     });
   };
 
-  const contentReady = fetch('/api/site-content', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+  const contentReady = fetchWithTimeout('/api/site-content', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
     .then((response) => response.ok ? response.json() : null)
     .then((payload) => mergeSiteContent(payload?.content || payload?.data?.content || []))
     .catch(() => { /* Static defaults remain available when the API is offline. */ });
@@ -817,8 +874,13 @@
       });
     });
     root.querySelectorAll?.('[data-locale-toggle]').forEach((button) => {
-      button.textContent = translate('nav.language');
+      button.textContent = translate('nav.languageShort');
       button.setAttribute('aria-label', translate('nav.language'));
+      button.setAttribute('title', translate('nav.language'));
+      // Expose the active language state consistently on every page. The
+      // control's label is the language it will switch to, while pressed
+      // reflects the currently selected locale.
+      button.setAttribute('aria-pressed', String(locale === 'en'));
     });
     document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
     document.documentElement.dataset.locale = locale;
@@ -840,7 +902,7 @@
   const collectHomeCatalog = async () => {
     if (document.body?.dataset.page === 'home') return;
     try {
-      const response = await fetch('/index.html', { credentials: 'same-origin', headers: { Accept: 'text/html' } });
+      const response = await fetchWithTimeout('/index.html', { credentials: 'same-origin', headers: { Accept: 'text/html' } });
       if (response.ok) collectMarkupCatalog(new DOMParser().parseFromString(await response.text(), 'text/html'));
     } catch { /* Current page content remains available. */ }
   };
@@ -885,6 +947,7 @@
 
   document.addEventListener('DOMContentLoaded', async () => {
     collectMarkupCatalog(document);
+    apply();
     await catalogReady;
     apply();
     document.querySelectorAll('[data-locale-toggle]').forEach((button) => {

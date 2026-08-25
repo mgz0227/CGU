@@ -224,6 +224,14 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
 .admin-record-panel .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .admin-record-panel .admin-table { min-width: 690px; }
 .admin-announcement-list { border-top: 1px solid var(--portal-line); }
+.admin-notification-list { border-top: 1px solid var(--portal-line); }
+.admin-notification-row { display: grid; grid-template-columns: minmax(0, 1fr) 160px 190px; align-items: center; gap: 20px; padding: 18px 3px; border-bottom: 1px solid var(--portal-line); }
+.admin-notification-row > * { min-width: 0; }
+.admin-notification-row.is-unread { padding-left: 12px; border-left: 3px solid var(--portal-coral); background: rgba(232, 199, 137, .12); }
+.admin-notification-row h3 { margin: 3px 0; font-family: Georgia, serif; font-size: 17px; font-weight: 400; }
+.admin-notification-row p { margin: 0; overflow: hidden; color: var(--portal-muted); font-size: 11px; line-height: 1.6; text-overflow: ellipsis; white-space: nowrap; }
+.admin-notification-row time { color: var(--portal-muted); font-size: 10px; }
+.nav-count { display: inline-grid; min-width: 18px; height: 18px; margin-left: 4px; place-items: center; color: var(--portal-ink); background: var(--portal-gold-soft); border-radius: 50%; font-size: 10px; line-height: 1; }
 .admin-announcement-row { display: grid; grid-template-columns: minmax(0, 1fr) 160px 170px; align-items: center; gap: 20px; padding: 18px 3px; border-bottom: 1px solid var(--portal-line); }
 .admin-admission-row { display: grid; grid-template-columns: minmax(0, 1fr) 160px 190px; align-items: center; gap: 20px; padding: 18px 3px; border-bottom: 1px solid var(--portal-line); }
 .admin-announcement-row > * { min-width: 0; }
@@ -300,6 +308,7 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
   .admin-editor { padding: 20px 16px; }
   .content-language-grid { grid-template-columns: 1fr; gap: 15px; }
   .admin-announcement-row { grid-template-columns: 1fr; gap: 8px; }
+  .admin-notification-row { grid-template-columns: 1fr; gap: 8px; }
   .admin-admission-row { grid-template-columns: 1fr; gap: 8px; }
   .admin-record-grid { grid-template-columns: 1fr; }
   .admin-record-panel { padding: 16px; }

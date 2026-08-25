@@ -438,8 +438,9 @@
   const updateLocaleControls = () => {
     document.querySelectorAll('[data-locale-toggle]').forEach((button) => {
       const english = sharedI18n?.locale === 'en';
-      button.textContent = english ? '中' : 'EN';
+      button.textContent = sharedI18n?.t('nav.languageShort') || (english ? '中' : 'EN');
       button.setAttribute('aria-label', translate('nav.language'));
+      button.setAttribute('title', translate('nav.language'));
       button.setAttribute('aria-pressed', String(english));
     });
   };

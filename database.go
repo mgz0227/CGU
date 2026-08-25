@@ -103,6 +103,20 @@ CREATE TABLE IF NOT EXISTS cgu_admissions (
   INDEX idx_admission_status (status_name),
   INDEX idx_admission_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS cgu_admin_notifications (
+  id VARCHAR(64) PRIMARY KEY,
+  recipient_id VARCHAR(64) NOT NULL,
+  type_name VARCHAR(64) NOT NULL,
+  title_zh VARCHAR(255) NOT NULL,
+  title_en VARCHAR(255) NOT NULL,
+  body_zh TEXT NOT NULL,
+  body_en TEXT NOT NULL,
+  reference_id VARCHAR(64) NOT NULL DEFAULT '',
+  created_at VARCHAR(64) NOT NULL,
+  read_at VARCHAR(64) NULL,
+  INDEX idx_admin_notification_recipient (recipient_id, created_at),
+  INDEX idx_admin_notification_unread (recipient_id, read_at, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS cgu_mailbox_messages (
   id VARCHAR(64) PRIMARY KEY,
   recipient_id VARCHAR(64) NOT NULL,
@@ -359,6 +373,10 @@ func (s *Store) loadDatabaseLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	notifications, err := loadAdminNotifications(ctx, s.db)
+	if err != nil {
+		return err
+	}
 	mailbox, err := loadMailbox(ctx, s.db)
 	if err != nil {
 		return err
@@ -377,7 +395,7 @@ func (s *Store) loadDatabaseLocked(ctx context.Context) error {
 		copy := item
 		s.siteContent[item.Key] = &copy
 	}
-	s.enrollments, s.grades, s.schedule, s.announcements, s.admissions, s.mailbox = enrollments, grades, schedule, announcements, admissions, mailbox
+	s.enrollments, s.grades, s.schedule, s.announcements, s.admissions, s.notifications, s.mailbox = enrollments, grades, schedule, announcements, admissions, notifications, mailbox
 	return nil
 }
 
@@ -496,6 +514,27 @@ func loadAdmissions(ctx context.Context, db *sql.DB) ([]*AdmissionApplication, e
 		item := &AdmissionApplication{}
 		if err := rows.Scan(&item.ID, &item.Name, &item.Email, &item.School, &item.Status, &item.Notes, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func loadAdminNotifications(ctx context.Context, db *sql.DB) ([]*AdminNotification, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, recipient_id, type_name, title_zh, title_en, body_zh, body_en, reference_id, created_at, read_at FROM cgu_admin_notifications ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]*AdminNotification, 0)
+	for rows.Next() {
+		item := &AdminNotification{}
+		var readAt sql.NullString
+		if err := rows.Scan(&item.ID, &item.RecipientID, &item.Type, &item.TitleZh, &item.TitleEn, &item.BodyZh, &item.BodyEn, &item.ReferenceID, &item.CreatedAt, &readAt); err != nil {
+			return nil, err
+		}
+		if readAt.Valid {
+			item.ReadAt = readAt.String
 		}
 		result = append(result, item)
 	}
@@ -669,6 +708,44 @@ func (s *Store) persistAdmissionLocked(item *AdmissionApplication) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_admissions (id, name_text, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name_text=VALUES(name_text), email=VALUES(email), school_text=VALUES(school_text), status_name=VALUES(status_name), notes_text=VALUES(notes_text), updated_at=VALUES(updated_at)`, item.ID, item.Name, item.Email, item.School, item.Status, item.Notes, item.CreatedAt, item.UpdatedAt)
+	return err
+}
+
+func persistAdmissionTx(ctx context.Context, tx *sql.Tx, admission *AdmissionApplication, notification *AdminNotification) error {
+	if admission == nil || notification == nil {
+		return fmt.Errorf("admission and notification are required")
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO cgu_admissions (id, name_text, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, admission.ID, admission.Name, admission.Email, admission.School, admission.Status, admission.Notes, admission.CreatedAt, admission.UpdatedAt); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO cgu_admin_notifications (id, recipient_id, type_name, title_zh, title_en, body_zh, body_en, reference_id, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, notification.ID, notification.RecipientID, notification.Type, notification.TitleZh, notification.TitleEn, notification.BodyZh, notification.BodyEn, notification.ReferenceID, notification.CreatedAt, nullableString(notification.ReadAt))
+	return err
+}
+
+func (s *Store) persistAdmissionWithNotificationLocked(admission *AdmissionApplication, notification *AdminNotification) error {
+	if s.db == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := persistAdmissionTx(ctx, tx, admission, notification); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) persistAdminNotificationReadLocked(item *AdminNotification) error {
+	if s.db == nil || item == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `UPDATE cgu_admin_notifications SET read_at = ? WHERE id = ? AND recipient_id = ?`, nullableString(item.ReadAt), item.ID, item.RecipientID)
 	return err
 }
 

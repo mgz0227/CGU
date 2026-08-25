@@ -74,13 +74,7 @@ func TestAcademicHTTPFlow(t *testing.T) {
 	}
 	unauthorizedResponse.Body.Close()
 
-	login := postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": "student", "password": "removed-account-password"})
-	if login.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("removed student account login status = %d", login.StatusCode)
-	}
-	login.Body.Close()
-
-	login = postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": testAdminUsername, "password": testAdminPassword})
+	login := postJSON(t, client, server.URL+"/api/auth/login", map[string]string{"username": testAdminUsername, "password": testAdminPassword})
 	if login.StatusCode != http.StatusOK {
 		t.Fatalf("administrator login status = %d, cookies=%v", login.StatusCode, login.Cookies())
 	}

@@ -93,6 +93,7 @@ go run .
 - `/api/auth/*`：登录、退出和当前用户
 - `/api/courses`、`/api/enrollments`、`/api/grades`、`/api/schedule`、`/api/announcements`：教务数据
 - `/api/admin/*`：管理员统计与 CRUD 接口；`/api/admin/admissions` 查看招生申请并更新处理状态
+- `/api/admin/notifications`：管理员查看由招生申请生成的持久化通知，并通过 `PATCH /api/admin/notifications/{id}` 更新已读状态；写入 MySQL 时申请和通知使用同一事务，避免后台漏报
 - `/api/admin/students`：管理员学生目录（GET 列表、POST 创建、PATCH/PUT 更新）；响应只返回脱敏资料和配置域名生成的学生邮箱，不返回密码或密码哈希
 - `/api/admin/grades`、`/api/admin/schedule`：管理员维护成绩与课表（GET/POST/PATCH/PUT/DELETE），支持 `student_id`/`user_id` 筛选并校验学生、课程引用
 - `/api/mailbox`：学生读取自己的校内收件箱并返回生成的学校邮箱地址；`PATCH /api/mailbox/{id}` 仅允许该收件人更新已读状态
