@@ -369,7 +369,11 @@ func (s *Store) beginMailboxDeliveryWithConfirmation(id string, confirmUnknown b
 			return nil, apiErr(http.StatusConflict, "already_delivered", "message has already been delivered")
 		case mailboxDeliverySending:
 			return nil, apiErr(http.StatusConflict, "delivery_in_progress", "message delivery is still in progress")
-		case mailboxDeliveryPending, mailboxDeliveryUnknown:
+		case mailboxDeliveryPending:
+			// Pending means no relay attempt has started yet, so it is safe to
+			// claim and send automatically. Only an unknown outcome needs
+			// explicit operator confirmation before another SMTP attempt.
+		case mailboxDeliveryUnknown:
 			if !confirmUnknown {
 				return nil, apiErr(http.StatusConflict, "delivery_outcome_unknown", "delivery outcome is unknown; confirm the relay did not accept it before retrying")
 			}

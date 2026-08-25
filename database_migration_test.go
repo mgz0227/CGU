@@ -52,6 +52,45 @@ func TestEnsureMailboxDeliveryColumnsToleratesConcurrentDDL(t *testing.T) {
 	}
 }
 
+func TestEnsureAdmissionApprovalColumnsToleratesConcurrentDDL(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	columnQuery := regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`)
+	columns := []struct {
+		name string
+		def  string
+	}{
+		{name: "student_id", def: "VARCHAR(128) NOT NULL DEFAULT ''"},
+		{name: "approved_at", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+		{name: "approved_by", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+		{name: "initial_password_issued_at", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		mock.ExpectQuery(columnQuery).
+			WithArgs("cgu_admissions", column.name).
+			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+		mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE cgu_admissions ADD COLUMN " + column.name + " " + column.def)).
+			WillReturnError(&mysql.MySQLError{Number: 1060, Message: "Duplicate column name"})
+	}
+	indexQuery := regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`)
+	mock.ExpectQuery(indexQuery).
+		WithArgs("cgu_admissions", "idx_admission_student").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE cgu_admissions ADD INDEX idx_admission_student (student_id)")).
+		WillReturnError(&mysql.MySQLError{Number: 1061, Message: "Duplicate key name"})
+
+	if err := ensureAdmissionApprovalColumns(context.Background(), db); err != nil {
+		t.Fatalf("concurrent admissions migration should be idempotent: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIsDuplicateSchemaObjectRejectsOtherMySQLErrors(t *testing.T) {
 	if !isDuplicateSchemaObject(&mysql.MySQLError{Number: 1060}) {
 		t.Fatal("duplicate column error was not recognized")

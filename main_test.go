@@ -287,7 +287,7 @@ func TestAdmissionsApplicationFlow(t *testing.T) {
 		t.Fatalf("unexpected admin applications: %#v", listPayload.Applications)
 	}
 
-	updateBody, err := json.Marshal(map[string]string{"status": "contacted", "notes": "已发送申请指南"})
+	updateBody, err := json.Marshal(map[string]string{"notes": "已发送申请指南"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestAdmissionsApplicationFlow(t *testing.T) {
 		t.Fatalf("admin admission update status = %d", update.StatusCode)
 	}
 	update.Body.Close()
-	if store.admissions[0].Status != "contacted" || store.admissions[0].Notes != "已发送申请指南" {
+	if store.admissions[0].Status != "pending" || store.admissions[0].Notes != "已发送申请指南" {
 		t.Fatalf("admission update not stored: %#v", store.admissions[0])
 	}
 
@@ -320,11 +320,11 @@ func TestAdmissionsApplicationFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats.Body.Close()
-	if statsPayload.Stats["admissions"] != 1 || statsPayload.Stats["pendingAdmissions"] != 0 {
+	if statsPayload.Stats["admissions"] != 1 || statsPayload.Stats["pendingAdmissions"] != 1 {
 		t.Fatalf("unexpected admission stats: %#v", statsPayload.Stats)
 	}
 
-	// Reviewing applications remain actionable in the pending counter.
+	// A legacy status transition must not bypass the atomic approval action.
 	updateBody, err = json.Marshal(map[string]string{"status": "reviewing"})
 	if err != nil {
 		t.Fatal(err)
@@ -339,7 +339,7 @@ func TestAdmissionsApplicationFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if update.StatusCode != http.StatusOK {
+	if update.StatusCode != http.StatusConflict {
 		t.Fatalf("reviewing admission update status = %d", update.StatusCode)
 	}
 	update.Body.Close()
@@ -352,7 +352,7 @@ func TestAdmissionsApplicationFlow(t *testing.T) {
 	}
 	stats.Body.Close()
 	if statsPayload.Stats["pendingAdmissions"] != 1 || statsPayload.Stats["pending"] < 1 {
-		t.Fatalf("reviewing application missing from pending stats: %#v", statsPayload.Stats)
+		t.Fatalf("pending application missing from pending stats: %#v", statsPayload.Stats)
 	}
 }
 

@@ -100,8 +100,13 @@ CREATE TABLE IF NOT EXISTS cgu_admissions (
   notes_text TEXT NOT NULL,
   created_at VARCHAR(64) NOT NULL,
   updated_at VARCHAR(64) NOT NULL,
+  student_id VARCHAR(128) NOT NULL DEFAULT '',
+  approved_at VARCHAR(64) NOT NULL DEFAULT '',
+  approved_by VARCHAR(64) NOT NULL DEFAULT '',
+  initial_password_issued_at VARCHAR(64) NOT NULL DEFAULT '',
   INDEX idx_admission_status (status_name),
-  INDEX idx_admission_created (created_at)
+  INDEX idx_admission_created (created_at),
+  INDEX idx_admission_student (student_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS cgu_admin_notifications (
   id VARCHAR(64) PRIMARY KEY,
@@ -187,6 +192,46 @@ func migrateDatabase(ctx context.Context, db *sql.DB) error {
 	if err := ensureMailboxDeliveryColumns(ctx, db); err != nil {
 		return fmt.Errorf("database mailbox migration: %w", err)
 	}
+	if err := ensureAdmissionApprovalColumns(ctx, db); err != nil {
+		return fmt.Errorf("database admissions migration: %w", err)
+	}
+	return nil
+}
+
+// ensureAdmissionApprovalColumns upgrades installations created before the
+// explicit approval workflow. Definitions are static and existence checks make
+// the migration safe to run concurrently on multiple application instances.
+func ensureAdmissionApprovalColumns(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name string
+		def  string
+	}{
+		{name: "student_id", def: "VARCHAR(128) NOT NULL DEFAULT ''"},
+		{name: "approved_at", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+		{name: "approved_by", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+		{name: "initial_password_issued_at", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`, "cgu_admissions", column.name).Scan(&count); err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `ALTER TABLE cgu_admissions ADD COLUMN `+column.name+` `+column.def); err != nil && !isDuplicateSchemaObject(err) {
+			return fmt.Errorf("add %s: %w", column.name, err)
+		}
+	}
+	var indexCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`, "cgu_admissions", "idx_admission_student").Scan(&indexCount); err != nil {
+		return err
+	}
+	if indexCount == 0 {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE cgu_admissions ADD INDEX idx_admission_student (student_id)`); err != nil && !isDuplicateSchemaObject(err) {
+			return fmt.Errorf("add admissions student index: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -247,6 +292,11 @@ func isDuplicateSchemaObject(err error) bool {
 	default:
 		return false
 	}
+}
+
+func isDuplicateKeyError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }
 
 func (s *Store) attachDatabase(db *sql.DB) error {
@@ -504,7 +554,7 @@ func loadAnnouncements(ctx context.Context, db *sql.DB) ([]*Announcement, error)
 }
 
 func loadAdmissions(ctx context.Context, db *sql.DB) ([]*AdmissionApplication, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, name_text, email, school_text, status_name, notes_text, created_at, updated_at FROM cgu_admissions ORDER BY created_at DESC`)
+	rows, err := db.QueryContext(ctx, `SELECT id, name_text, email, school_text, status_name, notes_text, created_at, updated_at, student_id, approved_at, approved_by, initial_password_issued_at FROM cgu_admissions ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -512,8 +562,21 @@ func loadAdmissions(ctx context.Context, db *sql.DB) ([]*AdmissionApplication, e
 	result := make([]*AdmissionApplication, 0)
 	for rows.Next() {
 		item := &AdmissionApplication{}
-		if err := rows.Scan(&item.ID, &item.Name, &item.Email, &item.School, &item.Status, &item.Notes, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		var studentID, approvedAt, approvedBy, passwordIssuedAt sql.NullString
+		if err := rows.Scan(&item.ID, &item.Name, &item.Email, &item.School, &item.Status, &item.Notes, &item.CreatedAt, &item.UpdatedAt, &studentID, &approvedAt, &approvedBy, &passwordIssuedAt); err != nil {
 			return nil, err
+		}
+		if studentID.Valid {
+			item.StudentID = studentID.String
+		}
+		if approvedAt.Valid {
+			item.ApprovedAt = approvedAt.String
+		}
+		if approvedBy.Valid {
+			item.ApprovedBy = approvedBy.String
+		}
+		if passwordIssuedAt.Valid {
+			item.InitialPasswordIssuedAt = passwordIssuedAt.String
 		}
 		result = append(result, item)
 	}
@@ -707,7 +770,10 @@ func (s *Store) persistAdmissionLocked(item *AdmissionApplication) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_admissions (id, name_text, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name_text=VALUES(name_text), email=VALUES(email), school_text=VALUES(school_text), status_name=VALUES(status_name), notes_text=VALUES(notes_text), updated_at=VALUES(updated_at)`, item.ID, item.Name, item.Email, item.School, item.Status, item.Notes, item.CreatedAt, item.UpdatedAt)
+	// Status transitions are owned by the approval action. Omitting
+	// status_name from the duplicate branch prevents a stale admin process from
+	// downgrading a durably approved application while saving notes.
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_admissions (id, name_text, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name_text=VALUES(name_text), email=VALUES(email), school_text=VALUES(school_text), notes_text=VALUES(notes_text), updated_at=VALUES(updated_at)`, item.ID, item.Name, item.Email, item.School, item.Status, item.Notes, item.CreatedAt, item.UpdatedAt)
 	return err
 }
 
@@ -737,6 +803,47 @@ func (s *Store) persistAdmissionWithNotificationLocked(admission *AdmissionAppli
 		return err
 	}
 	return tx.Commit()
+}
+
+const admissionForUpdateSQL = `SELECT id, name_text, email, school_text, status_name, notes_text, created_at, updated_at, student_id, approved_at, approved_by, initial_password_issued_at FROM cgu_admissions WHERE id = ? FOR UPDATE`
+
+const admissionApprovalUserInsertSQL = `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+const admissionApprovalUpdateSQL = `UPDATE cgu_admissions SET status_name = ?, student_id = ?, approved_at = ?, approved_by = ?, initial_password_issued_at = ?, updated_at = ? WHERE id = ?`
+
+// persistAdmissionApprovalTx writes the three records that make up an
+// approval. The admission row is locked by the caller, so a retry cannot
+// create a second account or welcome message between these statements.
+func persistAdmissionApprovalTx(ctx context.Context, tx *sql.Tx, application *AdmissionApplication, student *User, mailbox *MailboxMessage) error {
+	if application == nil || student == nil || mailbox == nil {
+		return errors.New("admission approval records are required")
+	}
+	if _, err := tx.ExecContext(ctx, admissionApprovalUserInsertSQL, student.ID, student.Username, student.Name, student.Email, student.Role, student.PasswordHash, student.StudentID, student.College, student.Year); err != nil {
+		return err
+	}
+	deliveryMode := strings.TrimSpace(mailbox.DeliveryMode)
+	if deliveryMode == "" {
+		deliveryMode = mailboxDeliveryModeInternal
+	}
+	deliveryStatus := strings.TrimSpace(mailbox.DeliveryStatus)
+	if deliveryStatus == "" {
+		deliveryStatus = mailboxDeliveryInternal
+	}
+	if _, err := tx.ExecContext(ctx, mailboxInsertSQL, mailbox.ID, mailbox.RecipientID, mailbox.SenderID, mailbox.SenderName, mailbox.Subject, mailbox.Body, mailbox.CreatedAt, nullableString(mailbox.ReadAt), deliveryMode, mailbox.ExternalRecipient, deliveryStatus, mailbox.DeliveryError, mailbox.DeliveredAt, nullableString(mailbox.RequestKey), mailbox.DeliveryStartedAt); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, admissionApprovalUpdateSQL, application.Status, application.StudentID, application.ApprovedAt, application.ApprovedBy, application.InitialPasswordIssuedAt, application.UpdatedAt, application.ID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return errors.New("admission approval update affected no rows")
+	}
+	return nil
 }
 
 func (s *Store) persistAdminNotificationReadLocked(item *AdminNotification) error {

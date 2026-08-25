@@ -74,11 +74,36 @@
     return { Accept: 'application/json', 'Content-Type': 'application/json', 'X-CGU-Request': '1' };
   };
 
+  // A stalled API request must not leave an admin table in its initial
+  // "loading" state forever. The limit is longer than the SMTP relay budget
+  // so a legitimate onboarding send is not abandoned by the browser first.
+  const API_TIMEOUT_MS = 30000;
+  const fetchAPI = async (url, request) => {
+    if (!window.AbortController) return fetch(url, request);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    let detachCaller = () => {};
+    if (request.signal) {
+      if (request.signal.aborted) controller.abort();
+      else {
+        const abortCaller = () => controller.abort();
+        request.signal.addEventListener('abort', abortCaller, { once: true });
+        detachCaller = () => request.signal.removeEventListener('abort', abortCaller);
+      }
+    }
+    try {
+      return await fetch(url, { ...request, signal: controller.signal });
+    } finally {
+      window.clearTimeout(timer);
+      detachCaller();
+    }
+  };
+
   const api = async (path, options = {}) => {
     const request = { credentials: 'include', ...options, headers: { ...jsonHeaders(), ...(options.headers || {}) } };
     let response;
     try {
-      response = await fetch(`${API_BASE}${path}`, request);
+      response = await fetchAPI(`${API_BASE}${path}`, request);
     } catch (error) {
       throw new ApiError(I18N.t('common.networkError'));
     }
@@ -235,7 +260,12 @@
     status: String(value.status ?? 'pending').toLowerCase(),
     notes: String(value.notes ?? '').trim(),
     createdAt: value.createdAt ?? value.created_at ?? value.submittedAt ?? '',
-    updatedAt: value.updatedAt ?? value.updated_at ?? ''
+    updatedAt: value.updatedAt ?? value.updated_at ?? '',
+    studentId: String(value.studentId ?? value.student_id ?? '').trim(),
+    approvedAt: value.approvedAt ?? value.approved_at ?? '',
+    issuedAt: value.issuedAt ?? value.issued_at ?? '',
+    deliveryStatus: String(value.deliveryStatus ?? value.delivery_status ?? '').trim(),
+    deliveryError: String(value.deliveryError ?? value.delivery_error ?? '').trim()
   });
 
   const normalizeAdminStudent = (value = {}) => ({
@@ -810,7 +840,16 @@
   const renderAdminAdmissions = () => {
     const list = document.querySelector('[data-admin-admission-list]');
     if (!list) return;
-     list.innerHTML = state.adminAdmissions.length ? state.adminAdmissions.map((item) => `<article class="admin-admission-row"><div><span class="announcement-type">${escapeHTML(item.school || I18N.t('admin.admissionUndecided'))}</span><h3>${escapeHTML(item.name || notAvailable())}</h3><p><a href="mailto:${escapeHTML(item.email)}">${escapeHTML(item.email || notAvailable())}</a></p></div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.createdAt, true))}</div><div class="admin-actions"><label class="visually-hidden" for="admission-status-${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.admissionStatus'))}</label><select id="admission-status-${escapeHTML(item.id)}" data-admission-status="${escapeHTML(item.id)}"><option value="pending"${item.status === 'pending' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionPending'))}</option><option value="reviewing"${item.status === 'reviewing' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionReviewing'))}</option><option value="contacted"${item.status === 'contacted' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionContacted'))}</option><option value="accepted"${item.status === 'accepted' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionAccepted'))}</option><option value="rejected"${item.status === 'rejected' ? ' selected' : ''}>${escapeHTML(I18N.t('admin.admissionRejected'))}</option></select></div></article>`).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noAdmissions'))}</p>`;
+    list.innerHTML = state.adminAdmissions.length ? state.adminAdmissions.map((item) => {
+      const approved = item.status === 'accepted' || Boolean(item.studentId);
+      const credentials = item.issuedCredentials || item.credentials;
+      const credentialPanel = credentials?.password ? `<div class="admission-credentials" role="status"><strong>${escapeHTML(I18N.t('admin.admissionCredentials'))}</strong><span>${escapeHTML(I18N.t('admin.admissionUsername'))}: ${escapeHTML(credentials.username || notAvailable())}</span><span>${escapeHTML(I18N.t('admin.admissionPassword'))}: <code>${escapeHTML(credentials.password)}</code></span><span>${escapeHTML(I18N.t('portal.studentEmail'))}: ${escapeHTML(credentials.studentEmail || credentials.email || notAvailable())}</span><button class="table-action" type="button" data-admission-copy-password="${escapeHTML(credentials.password)}">${escapeHTML(I18N.t('admin.admissionCopyPassword'))}</button></div>` : '';
+      const deliveryStatus = item.deliveryStatus || '';
+      const deliveryNotice = deliveryStatus === 'sent' ? I18N.t('admin.admissionEmailDelivery') : deliveryStatus === 'not_configured' ? I18N.t('admin.admissionEmailPending') : deliveryStatus === 'failed' ? I18N.t('admin.smtpFailed') : deliveryStatus === 'unknown' ? I18N.t('admin.smtpUnknown') : deliveryStatus ? I18N.t('admin.admissionEmailPending') : '';
+      const deliveryPanel = deliveryNotice ? `<small class="admission-provisioned">${escapeHTML(deliveryNotice)}${item.deliveryError ? ` ${escapeHTML(item.deliveryError)}` : ''}</small>` : '';
+      const action = approved ? `<div class="admin-actions"><span class="status-pill">${escapeHTML(I18N.t('admin.admissionApproved'))}</span><small class="admin-announcement-meta">${escapeHTML(item.studentId || notAvailable())}</small></div>` : `<div class="admin-actions"><button class="portal-button portal-button-gold" type="button" data-admission-approve="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.admissionApprove'))}<span aria-hidden="true">→</span></button></div>`;
+      return `<article class="admin-admission-row${approved ? ' is-approved' : ''}"><div><span class="announcement-type">${escapeHTML(item.school || I18N.t('admin.admissionUndecided'))}</span><h3>${escapeHTML(item.name || notAvailable())}</h3><p><a href="mailto:${escapeHTML(item.email)}">${escapeHTML(item.email || notAvailable())}</a></p>${approved ? `<small class="admission-provisioned">${escapeHTML(I18N.t('admin.admissionProvisioned'))}</small>${deliveryPanel}` : ''}${credentialPanel}</div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.createdAt, true))}</div>${action}</article>`;
+    }).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noAdmissions'))}</p>`;
   };
 
   const renderAdminNotifications = () => {
@@ -965,23 +1004,54 @@
   const handleAdminAdmissions = () => {
     const list = document.querySelector('[data-admin-admission-list]');
     if (!list) return;
-    list.addEventListener('change', async (event) => {
-      const select = event.target.closest('[data-admission-status]');
-      if (!select) return;
-      const item = state.adminAdmissions.find((value) => String(value.id) === String(select.dataset.admissionStatus));
-      if (!item) return;
-      const previous = item.status;
-      item.status = select.value;
-      select.disabled = true;
+    list.addEventListener('click', async (event) => {
+      const copyButton = event.target.closest('[data-admission-copy-password]');
+      if (copyButton) {
+        const password = copyButton.dataset.admissionCopyPassword || '';
+        try {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(password);
+          } else {
+            const input = document.createElement('textarea');
+            input.value = password;
+            input.setAttribute('readonly', '');
+            input.style.position = 'fixed';
+            input.style.opacity = '0';
+            document.body.appendChild(input);
+            input.select();
+            const copied = document.execCommand('copy');
+            input.remove();
+            if (!copied) throw new Error('clipboard unavailable');
+          }
+          showToast(I18N.t('admin.admissionCopied'));
+        } catch { showToast(I18N.t('admin.admissionCopyFailed')); }
+        return;
+      }
+      const button = event.target.closest('[data-admission-approve]');
+      if (!button) return;
+      const item = state.adminAdmissions.find((value) => String(value.id) === String(button.dataset.admissionApprove));
+      if (!item || item.status === 'accepted' || item.studentId) return;
+      button.disabled = true;
       try {
-        const result = await adminRequest(`/admin/admissions/${encodeURIComponent(item.id)}`, 'PATCH', { status: item.status, notes: item.notes });
+        const result = await adminRequest(`/admin/admissions/${encodeURIComponent(item.id)}/approve`, 'POST', {});
         const updated = normalizeAdmission(result?.application || result || item);
+        updated.deliveryStatus = String(result?.deliveryStatus || updated.deliveryStatus || '').trim();
+        updated.deliveryError = String(result?.deliveryError || updated.deliveryError || '').trim();
+        const initialPassword = String(result?.initialPassword || '').trim();
+        updated.issuedCredentials = result?.credentials || (initialPassword ? {
+          username: result?.student?.username || '',
+          password: initialPassword,
+          studentEmail: result?.student?.studentEmail || ''
+        } : null);
         state.adminAdmissions = state.adminAdmissions.map((value) => String(value.id) === String(item.id) ? updated : value);
-        renderAdminAdmissions();
-        showToast(I18N.t('admin.saved'));
+        if (result?.student) {
+          const student = normalizeAdminStudent(result.student);
+          state.adminStudents = [student, ...state.adminStudents.filter((value) => String(value.id) !== String(student.id))];
+        }
+        renderAdmin();
+        showToast(result?.alreadyApproved ? I18N.t('admin.admissionAlreadyApproved') : I18N.t('admin.admissionApproved'));
       } catch (error) {
-        item.status = previous;
-        renderAdminAdmissions();
+        button.disabled = false;
         if (isAuthError(error)) redirectToLogin(); else showToast(localizedError(error, 'admin.error'));
       }
     });

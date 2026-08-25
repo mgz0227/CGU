@@ -245,14 +245,33 @@ type SiteContentInput struct {
 // administrator endpoint; the public API returns the created record once so
 // the client can display a confirmation identifier.
 type AdmissionApplication struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Email     string `json:"email"`
-	School    string `json:"school"`
-	Status    string `json:"status"`
-	Notes     string `json:"notes,omitempty"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt,omitempty"`
+	ID                      string `json:"id"`
+	Name                    string `json:"name"`
+	Email                   string `json:"email"`
+	School                  string `json:"school"`
+	Status                  string `json:"status"`
+	Notes                   string `json:"notes,omitempty"`
+	CreatedAt               string `json:"createdAt"`
+	UpdatedAt               string `json:"updatedAt,omitempty"`
+	StudentID               string `json:"studentId,omitempty"`
+	ApprovedAt              string `json:"approvedAt,omitempty"`
+	ApprovedBy              string `json:"approvedBy,omitempty"`
+	DeliveryStatus          string `json:"deliveryStatus,omitempty"`
+	DeliveryError           string `json:"deliveryError,omitempty"`
+	InitialPasswordIssuedAt string `json:"-"`
+}
+
+// AdmissionApproval is returned by the explicit administrator approval
+// action. The initial password is deliberately response-only: it is never
+// persisted, included in an application projection, or written to a mailbox.
+type AdmissionApproval struct {
+	Application     AdmissionApplication `json:"application"`
+	Student         AdminStudent         `json:"student"`
+	InitialPassword string               `json:"initialPassword,omitempty"`
+	AlreadyApproved bool                 `json:"alreadyApproved"`
+	MailboxID       string               `json:"mailboxId,omitempty"`
+	DeliveryStatus  string               `json:"deliveryStatus,omitempty"`
+	DeliveryError   string               `json:"deliveryError,omitempty"`
 }
 
 type AdmissionApplicationInput struct {
@@ -833,7 +852,15 @@ func (s *Store) admissionsList() []AdmissionApplication {
 		if item == nil {
 			continue
 		}
-		result = append(result, *item)
+		copy := *item
+		// Delivery state is owned by the durable mailbox record. Join it into
+		// the administrator projection so a page reload does not lose the
+		// onboarding notice status shown immediately after approval.
+		if mailbox := s.admissionApprovalMailboxLocked(copy.ID); mailbox != nil {
+			copy.DeliveryStatus = mailbox.DeliveryStatus
+			copy.DeliveryError = mailbox.DeliveryError
+		}
+		result = append(result, copy)
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		return result[i].CreatedAt > result[j].CreatedAt
@@ -938,6 +965,19 @@ func (s *Store) updateAdmission(id string, input AdmissionApplicationInput) (*Ad
 		if err != nil {
 			return nil, err
 		}
+		// A status is a workflow state, not editable content. The explicit
+		// approval action is the sole transition that creates the student
+		// account, mailbox, and notification as one durable unit. PATCH remains
+		// available for administrative notes on the current state only.
+		if !strings.EqualFold(normalized.Status, item.Status) {
+			return nil, apiErr(http.StatusConflict, "approval_required", "use the approve action to change an application decision")
+		}
+		if strings.EqualFold(item.Status, "accepted") && strings.TrimSpace(item.StudentID) == "" {
+			return nil, apiErr(http.StatusConflict, "approval_incomplete", "approved applications must be completed through the approve action")
+		}
+		if strings.EqualFold(item.Status, "accepted") && (normalized.Name != item.Name || normalized.Email != item.Email || normalized.School != item.School) {
+			return nil, apiErr(http.StatusConflict, "admission_already_approved", "an approved applicant profile cannot be changed here")
+		}
 		*item = *normalized
 		if err := s.persistAdmissionLocked(item); err != nil {
 			*item = previous
@@ -949,6 +989,305 @@ func (s *Store) updateAdmission(id string, input AdmissionApplicationInput) (*Ad
 	return nil, apiErr(http.StatusNotFound, "admission_not_found", "application not found")
 }
 
+func admissionStudentIdentity(applicationID string) (studentID, username, userID string) {
+	digest := sha256.Sum256([]byte("cgu/admission/student/" + strings.TrimSpace(applicationID)))
+	suffix := strings.ToLower(fmt.Sprintf("%x", digest[:10]))
+	studentID = "CGU-" + strings.ToUpper(suffix)
+	username = "student-" + suffix
+	userID = "student-" + suffix
+	return studentID, username, userID
+}
+
+func newAdmissionInitialPassword() string {
+	// randomID uses crypto/rand and is long enough for the student password
+	// policy. The value is held only in the approval response while its bcrypt
+	// hash is persisted with the user record.
+	return randomID(18) + "!"
+}
+
+func (s *Store) findAdmissionLocked(id string) (*AdmissionApplication, int) {
+	for index, item := range s.admissions {
+		if item != nil && strings.EqualFold(item.ID, strings.TrimSpace(id)) {
+			return item, index
+		}
+	}
+	return nil, -1
+}
+
+func admissionApprovalRequestKey(applicationID string) string {
+	return "admission-approval:" + strings.TrimSpace(applicationID)
+}
+
+func (s *Store) admissionApprovalMailboxLocked(applicationID string) *MailboxMessage {
+	requestKey := admissionApprovalRequestKey(applicationID)
+	for _, item := range s.mailbox {
+		if item == nil || !strings.EqualFold(item.RequestKey, requestKey) {
+			continue
+		}
+		copy := *item
+		return &copy
+	}
+	return nil
+}
+
+func (s *Store) admissionApprovalViewLocked(application *AdmissionApplication, student *User, password string, alreadyApproved bool) *AdmissionApproval {
+	result := &AdmissionApproval{Student: s.adminStudentView(student), InitialPassword: password, AlreadyApproved: alreadyApproved}
+	if application != nil {
+		result.Application = *application
+	}
+	if mailbox := s.admissionApprovalMailboxLocked(result.Application.ID); mailbox != nil {
+		result.MailboxID = mailbox.ID
+		result.DeliveryStatus = mailbox.DeliveryStatus
+		result.DeliveryError = strings.TrimSpace(mailbox.DeliveryError)
+		if len([]rune(result.DeliveryError)) > 400 {
+			result.DeliveryError = string([]rune(result.DeliveryError)[:400])
+		}
+		result.Application.DeliveryStatus = result.DeliveryStatus
+		result.Application.DeliveryError = result.DeliveryError
+	}
+	return result
+}
+
+func (s *Store) admissionApprovalReplayLocked(item *AdmissionApplication) (*AdmissionApproval, *apiError) {
+	if item == nil || !strings.EqualFold(item.Status, "accepted") || strings.TrimSpace(item.StudentID) == "" {
+		return nil, apiErr(http.StatusConflict, "approval_incomplete", "approved application has no linked student account")
+	}
+	student := s.resolveStudentLocked(item.StudentID)
+	if student == nil || student.Role != "student" {
+		return nil, apiErr(http.StatusConflict, "approval_incomplete", "approved application has no linked student account")
+	}
+	return s.admissionApprovalViewLocked(item, student, "", true), nil
+}
+
+func (s *Store) buildAdmissionApprovalLocked(item *AdmissionApplication, approvedBy string) (*AdmissionApplication, *User, *MailboxMessage, string, *apiError) {
+	if item == nil {
+		return nil, nil, nil, "", apiErr(http.StatusNotFound, "admission_not_found", "application not found")
+	}
+	status := strings.ToLower(strings.TrimSpace(item.Status))
+	if status == "rejected" || status == "withdrawn" {
+		return nil, nil, nil, "", apiErr(http.StatusConflict, "admission_not_approvable", "this application is not eligible for approval")
+	}
+	studentID, username, userID := admissionStudentIdentity(item.ID)
+	for _, candidate := range s.users {
+		if candidate == nil {
+			continue
+		}
+		candidateIdentifiers := s.studentLoginIdentifiers(candidate.Username, candidate.Email, candidate.StudentID)
+		proposedIdentifiers := s.studentLoginIdentifiers(username, item.Email, studentID)
+		if candidate.ID == userID && candidate.Role == "student" && strings.EqualFold(candidate.StudentID, studentID) {
+			return nil, nil, nil, "", apiErr(http.StatusConflict, "approval_incomplete", "student account already exists without a completed approval")
+		}
+		if strings.EqualFold(candidate.StudentID, studentID) || identifiersOverlap(proposedIdentifiers, candidateIdentifiers) {
+			return nil, nil, nil, "", apiErr(http.StatusConflict, "student_exists", "generated student identifiers already belong to another account")
+		}
+	}
+	studentEmail := studentMailbox(studentID, s.studentEmailDomain)
+	if studentEmail == "" {
+		return nil, nil, nil, "", apiErr(http.StatusInternalServerError, "student_email_failed", "student mailbox could not be generated")
+	}
+	// Approval queues an external SMTP notification. Revalidate the persisted
+	// applicant address at this trust boundary in case an operator imported or
+	// edited a legacy row outside the normal admission validator.
+	if !validateContactEmail(item.Email) {
+		return nil, nil, nil, "", apiErr(http.StatusConflict, "external_recipient_invalid", "applicant email is not eligible for notification")
+	}
+	password := newAdmissionInitialPassword()
+	approvedBy = strings.TrimSpace(approvedBy)
+	if approvedBy == "" {
+		approvedBy = "admin"
+	}
+	approvedAt := time.Now().UTC().Format(time.RFC3339)
+	student := &User{
+		ID: userID, Username: username, Name: item.Name, Email: item.Email, Role: "student",
+		PasswordHash: hashPassword(password), StudentID: studentID, College: item.School,
+		Year: time.Now().UTC().Format("2006"),
+	}
+	mailbox := &MailboxMessage{
+		ID:                 "mail-admission-" + strings.TrimPrefix(userID, "student-"),
+		RecipientID:        student.ID,
+		RecipientName:      student.Name,
+		RecipientStudentID: student.StudentID,
+		RecipientEmail:     studentEmail,
+		SenderID:           approvedBy,
+		SenderName:         "CGU 教务处",
+		Subject:            "CGU 学生账户已建立",
+		Body:               fmt.Sprintf("你的 CGU 学生档案已建立。校内邮箱：%s。请使用教务处安全转交给你的初始密码登录；出于安全原因，初始密码不会写入校内邮箱。", studentEmail),
+		CreatedAt:          approvedAt,
+		// Queue the applicant notice as an external delivery. The transaction
+		// still stores the internal copy first; the server performs the SMTP
+		// attempt only after the student account has committed.
+		DeliveryMode:      mailboxDeliveryModeSMTP,
+		ExternalRecipient: item.Email,
+		DeliveryStatus:    mailboxDeliveryPending,
+		RequestKey:        admissionApprovalRequestKey(item.ID),
+	}
+	updated := *item
+	updated.Status = "accepted"
+	updated.StudentID = student.StudentID
+	updated.ApprovedAt = approvedAt
+	updated.ApprovedBy = approvedBy
+	updated.InitialPasswordIssuedAt = approvedAt
+	updated.UpdatedAt = approvedAt
+	return &updated, student, mailbox, password, nil
+}
+
+// approveAdmission is the only path that transitions an application to
+// accepted. It creates the student account and internal welcome message as a
+// single durable unit when MySQL is configured; the in-memory path applies the
+// same idempotent state transition under the store lock.
+func (s *Store) approveAdmission(id, approvedBy string) (*AdmissionApproval, *apiError) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, apiErr(http.StatusNotFound, "admission_not_found", "application not found")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		return s.approveAdmissionDatabaseLocked(id, approvedBy)
+	}
+	item, _ := s.findAdmissionLocked(id)
+	if item == nil {
+		return nil, apiErr(http.StatusNotFound, "admission_not_found", "application not found")
+	}
+	if strings.EqualFold(item.Status, "accepted") {
+		if strings.TrimSpace(item.StudentID) == "" {
+			return nil, apiErr(http.StatusConflict, "approval_incomplete", "approved application has no linked student account")
+		}
+		return s.admissionApprovalReplayLocked(item)
+	}
+	updated, student, mailbox, password, apiError := s.buildAdmissionApprovalLocked(item, approvedBy)
+	if apiError != nil {
+		return nil, apiError
+	}
+	// No persistence can fail in this branch. Apply all related records before
+	// publishing the response so a retry sees a complete approval.
+	s.users[student.ID] = student
+	s.mailbox = append(s.mailbox, mailbox)
+	*item = *updated
+	return s.admissionApprovalViewLocked(item, student, password, false), nil
+}
+
+type admissionRowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAdmissionApprovalRow(scanner admissionRowScanner) (*AdmissionApplication, error) {
+	item := &AdmissionApplication{}
+	var studentID, approvedAt, approvedBy, passwordIssuedAt sql.NullString
+	if err := scanner.Scan(&item.ID, &item.Name, &item.Email, &item.School, &item.Status, &item.Notes, &item.CreatedAt, &item.UpdatedAt, &studentID, &approvedAt, &approvedBy, &passwordIssuedAt); err != nil {
+		return nil, err
+	}
+	if studentID.Valid {
+		item.StudentID = studentID.String
+	}
+	if approvedAt.Valid {
+		item.ApprovedAt = approvedAt.String
+	}
+	if approvedBy.Valid {
+		item.ApprovedBy = approvedBy.String
+	}
+	if passwordIssuedAt.Valid {
+		item.InitialPasswordIssuedAt = passwordIssuedAt.String
+	}
+	return item, nil
+}
+
+func loadAdmissionStudentTx(ctx context.Context, tx *sql.Tx, studentID string) (*User, error) {
+	student := &User{}
+	err := tx.QueryRowContext(ctx, `SELECT id, username, name_text, email, role_name, password_hash, student_id, college, year_text FROM cgu_users WHERE student_id = ? AND role_name = 'student' LIMIT 1`, studentID).Scan(&student.ID, &student.Username, &student.Name, &student.Email, &student.Role, &student.PasswordHash, &student.StudentID, &student.College, &student.Year)
+	if err != nil {
+		return nil, err
+	}
+	return student, nil
+}
+
+func (s *Store) upsertAdmissionMemoryLocked(item *AdmissionApplication) *AdmissionApplication {
+	if item == nil {
+		return nil
+	}
+	if existing, _ := s.findAdmissionLocked(item.ID); existing != nil {
+		*existing = *item
+		return existing
+	}
+	copy := *item
+	s.admissions = append(s.admissions, &copy)
+	return &copy
+}
+
+func (s *Store) approveAdmissionDatabaseLocked(id, approvedBy string) (*AdmissionApproval, *apiError) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, apiErr(http.StatusServiceUnavailable, "admission_approval_persistence_failed", "application approval could not be started")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	item, err := scanAdmissionApprovalRow(tx.QueryRowContext(ctx, admissionForUpdateSQL, id))
+	if err == sql.ErrNoRows {
+		return nil, apiErr(http.StatusNotFound, "admission_not_found", "application not found")
+	}
+	if err != nil {
+		return nil, apiErr(http.StatusServiceUnavailable, "admission_approval_persistence_failed", "application could not be read")
+	}
+	if strings.EqualFold(item.Status, "accepted") {
+		if strings.TrimSpace(item.StudentID) == "" {
+			return nil, apiErr(http.StatusConflict, "approval_incomplete", "approved application has no linked student account")
+		}
+		// Read the linked account from the same durable store even when this
+		// process has a cached copy. This prevents a stale in-memory profile from
+		// being returned after an administrator edits the account elsewhere.
+		student, err := loadAdmissionStudentTx(ctx, tx, item.StudentID)
+		if err == sql.ErrNoRows {
+			return nil, apiErr(http.StatusConflict, "approval_incomplete", "approved application has no linked student account")
+		}
+		if err != nil {
+			return nil, apiErr(http.StatusServiceUnavailable, "admission_approval_persistence_failed", "student account could not be read")
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, apiErr(http.StatusServiceUnavailable, "admission_approval_persistence_failed", "application approval could not be finalized")
+		}
+		committed = true
+		s.users[student.ID] = student
+		stored := s.upsertAdmissionMemoryLocked(item)
+		return s.admissionApprovalViewLocked(stored, student, "", true), nil
+	}
+	if strings.EqualFold(item.Status, "rejected") || strings.EqualFold(item.Status, "withdrawn") {
+		return nil, apiErr(http.StatusConflict, "admission_not_approvable", "this application is not eligible for approval")
+	}
+	updated, student, mailbox, password, apiError := s.buildAdmissionApprovalLocked(item, approvedBy)
+	if apiError != nil {
+		return nil, apiError
+	}
+	if err := persistAdmissionApprovalTx(ctx, tx, updated, student, mailbox); err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, apiErr(http.StatusConflict, "student_exists", "generated student identifiers already belong to another account")
+		}
+		return nil, apiErr(http.StatusServiceUnavailable, "admission_approval_persistence_failed", "student account could not be saved")
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, apiErr(http.StatusServiceUnavailable, "admission_approval_persistence_failed", "application approval could not be finalized")
+	}
+	committed = true
+	s.users[student.ID] = student
+	foundMailbox := false
+	for _, existing := range s.mailbox {
+		if existing != nil && strings.EqualFold(existing.RequestKey, mailbox.RequestKey) {
+			foundMailbox = true
+			break
+		}
+	}
+	if !foundMailbox {
+		s.mailbox = append(s.mailbox, mailbox)
+	}
+	stored := s.upsertAdmissionMemoryLocked(updated)
+	return s.admissionApprovalViewLocked(stored, student, password, false), nil
+}
+
 func (s *Store) deleteAdmission(id string) (*AdmissionApplication, *apiError) {
 	id = strings.TrimSpace(id)
 	s.mu.Lock()
@@ -956,6 +1295,9 @@ func (s *Store) deleteAdmission(id string) (*AdmissionApplication, *apiError) {
 	for i, item := range s.admissions {
 		if item == nil || !strings.EqualFold(item.ID, id) {
 			continue
+		}
+		if strings.EqualFold(item.Status, "accepted") && strings.TrimSpace(item.StudentID) != "" {
+			return nil, apiErr(http.StatusConflict, "admission_already_approved", "approved applications cannot be deleted after student provisioning")
 		}
 		copy := *item
 		s.admissions = append(s.admissions[:i], s.admissions[i+1:]...)
@@ -1065,6 +1407,18 @@ func defaultSiteContent() map[string]*SiteContent {
 		{Key: "admin.confirmUnknownDelivery", Zh: "我确认中继未接受，继续重试", En: "I confirm the relay did not accept it; retry"},
 		{Key: "admin.deliveryTarget", Zh: "外发地址", En: "External address"},
 		{Key: "admin.retryDelivery", Zh: "重试外发", En: "Retry delivery"},
+		{Key: "admin.admissionApprove", Zh: "同意录取", En: "Approve admission"},
+		{Key: "admin.admissionApproved", Zh: "已自动录取", En: "Automatically admitted"},
+		{Key: "admin.admissionProvisioned", Zh: "学生档案与校内邮箱已建立。", En: "Student record and university mailbox created."},
+		{Key: "admin.admissionCredentials", Zh: "初始登录凭据（仅显示一次）", En: "Initial sign-in details (shown once)"},
+		{Key: "admin.admissionUsername", Zh: "登录账号", En: "Login account"},
+		{Key: "admin.admissionPassword", Zh: "初始密码", En: "Initial password"},
+		{Key: "admin.admissionEmailDelivery", Zh: "入学通知已发送到申请邮箱。", En: "Onboarding notice sent to the applicant email."},
+		{Key: "admin.admissionEmailPending", Zh: "申请邮箱通知尚未配置 SMTP，请安全转交初始凭据。", En: "SMTP is not configured; transfer the initial details securely."},
+		{Key: "admin.admissionCopyPassword", Zh: "复制初始密码", En: "Copy initial password"},
+		{Key: "admin.admissionCopied", Zh: "初始密码已复制。", En: "Initial password copied."},
+		{Key: "admin.admissionCopyFailed", Zh: "浏览器拒绝访问剪贴板，请使用密码旁的复制功能或安全地手动转交。", En: "The browser blocked clipboard access. Transfer the password securely by another method."},
+		{Key: "admin.admissionAlreadyApproved", Zh: "该申请已处理，系统不会重复创建账号。", En: "This application is already processed; no duplicate account was created."},
 		{Key: "admin.coursesUnit", Zh: "COURSES", En: "COURSES"},
 		{Key: "admin.studentsUnit", Zh: "STUDENTS", En: "STUDENTS"},
 		{Key: "admin.sectionsUnit", Zh: "OPEN SECTIONS", En: "OPEN SECTIONS"},
@@ -1898,7 +2252,19 @@ func normalizeAdmission(input AdmissionApplicationInput, existing *AdmissionAppl
 	if id == "" {
 		id = "application-" + randomID(16)
 	}
-	return &AdmissionApplication{ID: id, Name: name, Email: email, School: school, Status: status, Notes: notes, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+	result := &AdmissionApplication{ID: id, Name: name, Email: email, School: school, Status: status, Notes: notes, CreatedAt: createdAt, UpdatedAt: updatedAt}
+	if existing != nil {
+		result.StudentID = existing.StudentID
+		result.ApprovedAt = existing.ApprovedAt
+		result.ApprovedBy = existing.ApprovedBy
+		result.InitialPasswordIssuedAt = existing.InitialPasswordIssuedAt
+		// Delivery state belongs to the linked mailbox record, but preserving the
+		// current projection here prevents a notes-only PATCH from briefly
+		// clearing the status returned to the administrator.
+		result.DeliveryStatus = existing.DeliveryStatus
+		result.DeliveryError = existing.DeliveryError
+	}
+	return result, nil
 }
 
 func first(values ...string) string {
@@ -2331,7 +2697,17 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		if !s.requireAdmin(w, r) {
 			return
 		}
-		id := decodePathID(strings.TrimPrefix(p, "/api/admin/admissions/"))
+		suffix := strings.Trim(strings.TrimPrefix(p, "/api/admin/admissions/"), "/")
+		parts := strings.Split(suffix, "/")
+		if len(parts) == 2 && parts[1] == "approve" {
+			if r.Method != http.MethodPost {
+				methodNotAllowed(w, http.MethodPost)
+				return
+			}
+			s.approveAdmission(w, r, decodePathID(parts[0]))
+			return
+		}
+		id := decodePathID(suffix)
 		if r.Method == http.MethodDelete {
 			s.deleteAdmission(w, id)
 		} else if r.Method == http.MethodPatch || r.Method == http.MethodPut {
@@ -2763,6 +3139,82 @@ func (s *Server) updateAdmission(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "application": item})
+}
+
+func (s *Server) approveAdmission(w http.ResponseWriter, r *http.Request, id string) {
+	admin := s.currentUser(r)
+	if admin == nil || admin.Role != "admin" {
+		writeError(w, apiErr(http.StatusForbidden, "admin_required", "administrator role is required"))
+		return
+	}
+	result, apiError := s.store.approveAdmission(id, admin.ID)
+	if apiError != nil {
+		writeError(w, apiError)
+		return
+	}
+	if !result.AlreadyApproved {
+		s.deliverAdmissionNotice(r.Context(), result)
+	}
+	status := http.StatusCreated
+	if result.AlreadyApproved {
+		status = http.StatusOK
+	}
+	w.Header().Set("Location", "/api/admin/students/"+url.PathEscape(result.Student.ID))
+	payload := map[string]any{
+		"ok":              true,
+		"application":     result.Application,
+		"student":         result.Student,
+		"alreadyApproved": result.AlreadyApproved,
+	}
+	if result.InitialPassword != "" {
+		// This key is intentionally absent on replay, rather than present with
+		// an empty value, so clients cannot mistake a retry for a credential
+		// delivery.
+		payload["initialPassword"] = result.InitialPassword
+	}
+	if result.MailboxID != "" {
+		payload["mailboxId"] = result.MailboxID
+		payload["deliveryStatus"] = result.DeliveryStatus
+		if result.DeliveryError != "" {
+			payload["deliveryError"] = result.DeliveryError
+		}
+	}
+	writeJSON(w, status, payload)
+}
+
+// deliverAdmissionNotice attempts the queued applicant notification only
+// after the account transaction has committed. A transport failure never
+// rolls back admission; the durable mailbox record carries the state into the
+// existing administrator retry workflow.
+func (s *Server) deliverAdmissionNotice(ctx context.Context, result *AdmissionApproval) {
+	if result == nil || strings.TrimSpace(result.MailboxID) == "" {
+		return
+	}
+	setDelivery := func(status, deliveryError string) {
+		result.DeliveryStatus = status
+		result.DeliveryError = deliveryError
+		result.Application.DeliveryStatus = status
+		result.Application.DeliveryError = deliveryError
+	}
+	item, apiError := s.store.beginMailboxDelivery(result.MailboxID)
+	if apiError != nil {
+		setDelivery(mailboxDeliveryPending, apiError.Message)
+		return
+	}
+	status, deliveryError, deliveredAt := s.deliverMailboxExternally(ctx, item)
+	updated, statusError := s.store.updateMailboxDelivery(item.ID, item.DeliveryStartedAt, status, deliveryError, deliveredAt)
+	if statusError == nil && updated != nil {
+		setDelivery(updated.DeliveryStatus, updated.DeliveryError)
+		return
+	}
+	// The relay may already have accepted the message. Keep the outcome
+	// conservative and expose a retryable record rather than claiming failure.
+	unknown, _ := s.store.markMailboxDeliveryUnknown(item.ID, "SMTP outcome unknown; delivery status could not be saved", item.DeliveryStartedAt)
+	if unknown != nil {
+		setDelivery(unknown.DeliveryStatus, unknown.DeliveryError)
+		return
+	}
+	setDelivery(mailboxDeliveryUnknown, "SMTP outcome unknown; delivery status could not be saved")
 }
 
 func (s *Server) deleteAdmission(w http.ResponseWriter, id string) {

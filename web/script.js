@@ -398,6 +398,17 @@
     if (event.target === dialog) closeDialog();
   });
 
+  const submitWithTimeout = async (url, options, timeout = 30000) => {
+    if (!window.AbortController) return fetch(url, options);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeout);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      window.clearTimeout(timer);
+    }
+  };
+
   document.querySelector('.apply-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -409,7 +420,7 @@
     if (submit) submit.disabled = true;
     try {
       const values = Object.fromEntries(new FormData(form).entries());
-      const response = await fetch('/api/admissions', {
+      const response = await submitWithTimeout('/api/admissions', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-CGU-Request': '1' },
