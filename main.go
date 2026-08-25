@@ -167,9 +167,9 @@ type ScheduleInput struct {
 	Teacher      string `json:"teacher"`
 }
 
-// Mailbox messages are internal CGU academic notices. They intentionally do
-// not model external SMTP credentials or transport details; deployment can
-// add an external connector later without changing student permissions.
+// Mailbox messages are internal CGU academic notices with optional, recorded
+// external delivery metadata. SMTP credentials stay in deployment config and
+// are never part of this model or any student-facing projection.
 type MailboxMessage struct {
 	ID                 string `json:"id"`
 	RecipientID        string `json:"recipientId,omitempty"`
@@ -182,16 +182,29 @@ type MailboxMessage struct {
 	Body               string `json:"body"`
 	CreatedAt          string `json:"createdAt"`
 	ReadAt             string `json:"readAt,omitempty"`
+	DeliveryMode       string `json:"deliveryMode,omitempty"`
+	ExternalRecipient  string `json:"externalRecipient,omitempty"`
+	DeliveryStatus     string `json:"deliveryStatus,omitempty"`
+	DeliveryError      string `json:"deliveryError,omitempty"`
+	DeliveredAt        string `json:"deliveredAt,omitempty"`
+	RequestKey         string `json:"-"`
+	Replayed           bool   `json:"-"`
+	DeliveryStartedAt  string `json:"-"`
 }
 
 type MailboxInput struct {
-	StudentID  string `json:"studentId"`
-	StudentRef string `json:"student_id"`
-	Subject    string `json:"subject"`
-	Title      string `json:"title"`
-	Body       string `json:"body"`
-	Message    string `json:"message"`
-	Content    string `json:"content"`
+	StudentID         string `json:"studentId"`
+	StudentRef        string `json:"student_id"`
+	Subject           string `json:"subject"`
+	Title             string `json:"title"`
+	Body              string `json:"body"`
+	Message           string `json:"message"`
+	Content           string `json:"content"`
+	External          *bool  `json:"external"`
+	SendExternal      *bool  `json:"sendExternal"`
+	SendExternalSnake *bool  `json:"send_external"`
+	IdempotencyKey    string `json:"idempotencyKey"`
+	RequestKey        string `json:"requestKey"`
 }
 
 type MailboxReadInput struct {
@@ -944,12 +957,30 @@ func defaultSiteContent() map[string]*SiteContent {
 		{Key: "admin.recipient", Zh: "收件学生", En: "Recipient"},
 		{Key: "admin.subject", Zh: "主题", En: "Subject"},
 		{Key: "admin.messageBody", Zh: "正文", En: "Message body"},
+		{Key: "admin.externalDelivery", Zh: "同时发送到联系邮箱", En: "Also send to contact email"},
+		{Key: "admin.externalDeliveryHelp", Zh: "需要在服务端配置 SMTP；校内邮箱记录仍会保留。", En: "Requires SMTP configuration on the server; the internal mailbox copy is always retained."},
 		{Key: "admin.sendMessage", Zh: "发送邮件", En: "Send message"},
+		{Key: "admin.sendingMessage", Zh: "发送中…", En: "Sending…"},
 		{Key: "admin.sentMessages", Zh: "发送记录", En: "Sent messages"},
 		{Key: "admin.read", Zh: "已读", En: "Read"},
 		{Key: "admin.unread", Zh: "未读", En: "Unread"},
 		{Key: "admin.noMailboxMessages", Zh: "暂无发送记录。", En: "No sent messages yet."},
 		{Key: "admin.messageSent", Zh: "邮件已发送。", En: "Message sent."},
+		{Key: "admin.smtpSent", Zh: "校内邮件已保存，SMTP 中继已接受外发。", En: "Internal copy saved; the SMTP relay accepted the message."},
+		{Key: "admin.smtpFailed", Zh: "校内邮件已保存，但 SMTP 外发失败。", En: "Internal copy saved, but SMTP delivery failed."},
+		{Key: "admin.smtpNotConfigured", Zh: "校内邮件已保存，SMTP 尚未配置。", En: "Internal copy saved; SMTP is not configured."},
+		{Key: "admin.smtpUnknown", Zh: "校内邮件已保存，但外发结果未知，请确认后再重试。", En: "Internal copy saved; external delivery outcome is unknown. Confirm before retrying."},
+		{Key: "admin.messageAlreadyRecorded", Zh: "已返回之前保存的邮件记录。", En: "The previously recorded message was returned."},
+		{Key: "admin.deliveryInternal", Zh: "仅校内邮箱", En: "Internal mailbox only"},
+		{Key: "admin.deliveryPending", Zh: "外发处理中", En: "External delivery pending"},
+		{Key: "admin.deliverySending", Zh: "正在外发", En: "External delivery in progress"},
+		{Key: "admin.deliverySent", Zh: "SMTP 中继已接受", En: "SMTP relay accepted"},
+		{Key: "admin.deliveryFailed", Zh: "SMTP 外发失败", En: "SMTP delivery failed"},
+		{Key: "admin.deliveryNotConfigured", Zh: "SMTP 未配置", En: "SMTP not configured"},
+		{Key: "admin.deliveryUnknown", Zh: "投递结果未知", En: "Delivery outcome unknown"},
+		{Key: "admin.confirmUnknownDelivery", Zh: "我确认中继未接受，继续重试", En: "I confirm the relay did not accept it; retry"},
+		{Key: "admin.deliveryTarget", Zh: "外发地址", En: "External address"},
+		{Key: "admin.retryDelivery", Zh: "重试外发", En: "Retry delivery"},
 		{Key: "admin.coursesUnit", Zh: "COURSES", En: "COURSES"},
 		{Key: "admin.studentsUnit", Zh: "STUDENTS", En: "STUDENTS"},
 		{Key: "admin.sectionsUnit", Zh: "OPEN SECTIONS", En: "OPEN SECTIONS"},
@@ -1068,7 +1099,9 @@ func (s *Store) changeEnrollment(studentID, courseID, action string) (*Enrollmen
 	if action == "enroll" {
 		if current != nil {
 			copy := *current
-			s.persistEnrollmentLocked(current)
+			if err := s.persistEnrollmentLocked(current); err != nil {
+				return nil, apiErr(http.StatusServiceUnavailable, "enrollment_persistence_failed", "enrollment could not be saved")
+			}
 			return &copy, nil
 		}
 		count := 0
@@ -1082,17 +1115,29 @@ func (s *Store) changeEnrollment(studentID, courseID, action string) (*Enrollmen
 		}
 		enrollment := &Enrollment{ID: "enrollment-" + randomID(12), StudentID: studentID, CourseID: course.ID, Term: course.Term, Status: "enrolled"}
 		s.enrollments = append(s.enrollments, enrollment)
-		s.persistEnrollmentLocked(enrollment)
+		if err := s.persistEnrollmentLocked(enrollment); err != nil {
+			s.enrollments = s.enrollments[:len(s.enrollments)-1]
+			return nil, apiErr(http.StatusServiceUnavailable, "enrollment_persistence_failed", "enrollment could not be saved")
+		}
 		copy := *enrollment
 		return &copy, nil
 	}
 	if current == nil {
 		enrollment := &Enrollment{ID: "enrollment-" + randomID(12), StudentID: studentID, CourseID: course.ID, Term: course.Term, Status: "dropped"}
-		s.persistEnrollmentLocked(enrollment)
-		return enrollment, nil
+		s.enrollments = append(s.enrollments, enrollment)
+		if err := s.persistEnrollmentLocked(enrollment); err != nil {
+			s.enrollments = s.enrollments[:len(s.enrollments)-1]
+			return nil, apiErr(http.StatusServiceUnavailable, "enrollment_persistence_failed", "enrollment could not be saved")
+		}
+		copy := *enrollment
+		return &copy, nil
 	}
+	previousStatus := current.Status
 	current.Status = "dropped"
-	s.persistEnrollmentLocked(current)
+	if err := s.persistEnrollmentLocked(current); err != nil {
+		current.Status = previousStatus
+		return nil, apiErr(http.StatusServiceUnavailable, "enrollment_persistence_failed", "enrollment could not be saved")
+	}
 	copy := *current
 	return &copy, nil
 }
@@ -1437,8 +1482,10 @@ func (s *Store) createCourse(input CourseInput) (*Course, *apiError) {
 			return nil, apiErr(409, "course_exists", "course id or code already exists")
 		}
 	}
+	if err := s.persistCourseLocked(course); err != nil {
+		return nil, apiErr(http.StatusServiceUnavailable, "course_persistence_failed", "course could not be saved")
+	}
 	s.courses = append(s.courses, course)
-	s.persistCourseLocked(course)
 	copy := *course
 	return &copy, nil
 }
@@ -1465,8 +1512,10 @@ func (s *Store) updateCourse(id string, input CourseInput) (*Course, *apiError) 
 			return nil, apiErr(409, "course_exists", "course id or code already exists")
 		}
 	}
+	if err := s.persistCourseLocked(normalized); err != nil {
+		return nil, apiErr(http.StatusServiceUnavailable, "course_persistence_failed", "course could not be saved")
+	}
 	*s.courses[index] = *normalized
-	s.persistCourseLocked(normalized)
 	copy := *normalized
 	return &copy, nil
 }
@@ -1477,8 +1526,31 @@ func (s *Store) deleteCourse(id string) (*Course, *apiError) {
 	for i, item := range s.courses {
 		if strings.EqualFold(item.ID, id) {
 			copy := *item
+			if err := s.deleteCoursePersistedLocked(item.ID); err != nil {
+				return nil, apiErr(http.StatusServiceUnavailable, "course_persistence_failed", "course could not be deleted")
+			}
 			s.courses = append(s.courses[:i], s.courses[i+1:]...)
-			s.deleteCoursePersistedLocked(item.ID)
+			filteredEnrollments := s.enrollments[:0]
+			for _, enrollment := range s.enrollments {
+				if enrollment == nil || !strings.EqualFold(enrollment.CourseID, item.ID) {
+					filteredEnrollments = append(filteredEnrollments, enrollment)
+				}
+			}
+			s.enrollments = filteredEnrollments
+			filteredGrades := s.grades[:0]
+			for _, grade := range s.grades {
+				if grade == nil || !strings.EqualFold(grade.CourseID, item.ID) {
+					filteredGrades = append(filteredGrades, grade)
+				}
+			}
+			s.grades = filteredGrades
+			filteredSchedule := s.schedule[:0]
+			for _, entry := range s.schedule {
+				if entry == nil || !strings.EqualFold(entry.CourseID, item.ID) {
+					filteredSchedule = append(filteredSchedule, entry)
+				}
+			}
+			s.schedule = filteredSchedule
 			return &copy, nil
 		}
 	}
@@ -1492,8 +1564,10 @@ func (s *Store) createAnnouncement(input AnnouncementInput) (*Announcement, *api
 	if err != nil {
 		return nil, err
 	}
+	if err := s.persistAnnouncementLocked(item); err != nil {
+		return nil, apiErr(http.StatusServiceUnavailable, "announcement_persistence_failed", "announcement could not be saved")
+	}
 	s.announcements = append(s.announcements, item)
-	s.persistAnnouncementLocked(item)
 	copy := *item
 	return &copy, nil
 }
@@ -1507,8 +1581,10 @@ func (s *Store) updateAnnouncement(id string, input AnnouncementInput) (*Announc
 			if err != nil {
 				return nil, err
 			}
+			if err := s.persistAnnouncementLocked(normalized); err != nil {
+				return nil, apiErr(http.StatusServiceUnavailable, "announcement_persistence_failed", "announcement could not be saved")
+			}
 			s.announcements[i] = normalized
-			s.persistAnnouncementLocked(normalized)
 			copy := *normalized
 			return &copy, nil
 		}
@@ -1522,8 +1598,10 @@ func (s *Store) deleteAnnouncement(id string) (*Announcement, *apiError) {
 	for i, item := range s.announcements {
 		if strings.EqualFold(item.ID, id) {
 			copy := *item
+			if err := s.deleteAnnouncementPersistedLocked(item.ID); err != nil {
+				return nil, apiErr(http.StatusServiceUnavailable, "announcement_persistence_failed", "announcement could not be deleted")
+			}
 			s.announcements = append(s.announcements[:i], s.announcements[i+1:]...)
-			s.deleteAnnouncementPersistedLocked(item.ID)
 			return &copy, nil
 		}
 	}
@@ -1750,6 +1828,9 @@ func first(values ...string) string {
 
 type Server struct {
 	store             *Store
+	mailer            ExternalMailSender
+	smtpSlots         chan struct{}
+	smtpTimeout       time.Duration
 	staticDir         string
 	publicOrigin      string
 	trustedProxies    []netip.Prefix
@@ -1780,7 +1861,15 @@ func NewServer(store *Store, staticDir string) *Server {
 		staticDir = "web"
 	}
 	secure := strings.EqualFold(os.Getenv("CGU_COOKIE_SECURE"), "1") || strings.EqualFold(os.Getenv("CGU_COOKIE_SECURE"), "true")
-	return &Server{store: store, staticDir: staticDir, sessions: make(map[string]session), loginAttempts: make(map[string]*loginAttempt), admissionAttempts: make(map[string]*admissionAttempt), cookieSecure: secure, storageMode: "memory"}
+	return &Server{store: store, smtpSlots: make(chan struct{}, 4), smtpTimeout: mailboxExternalSendTimeout, staticDir: staticDir, sessions: make(map[string]session), loginAttempts: make(map[string]*loginAttempt), admissionAttempts: make(map[string]*admissionAttempt), cookieSecure: secure, storageMode: "memory"}
+}
+
+func (s *Server) setExternalMailSender(sender ExternalMailSender) {
+	s.mailer = sender
+	s.smtpTimeout = mailboxExternalSendTimeout
+	if mailer, ok := sender.(*SMTPMailer); ok && mailer != nil && mailer.cfg.TimeoutSecond > 0 {
+		s.smtpTimeout = time.Duration(mailer.cfg.TimeoutSecond) * time.Second
+	}
 }
 
 func (s *Server) setTrustedProxies(values []string) error {
@@ -1996,6 +2085,20 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		} else {
 			methodNotAllowed(w, http.MethodGet, http.MethodPost)
 		}
+	case strings.HasPrefix(p, "/api/admin/mailbox/"):
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(p, "/api/admin/mailbox/"), "/"), "/")
+		if len(parts) != 2 || parts[1] != "retry" {
+			writeError(w, apiErr(http.StatusNotFound, "message_not_found", "message not found"))
+			return
+		}
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		s.retryAdminMailbox(w, r, decodePathID(parts[0]))
 	case p == "/api/admin/courses":
 		if !s.requireAdmin(w, r) {
 			return
@@ -3103,7 +3206,18 @@ func main() {
 	if database != nil {
 		defer database.Close()
 	}
+	if cfg.SMTP.Enabled && storageMode != "mysql" {
+		log.Fatal("SMTP external delivery requires a healthy MySQL store; refusing to start with memory fallback")
+	}
 	handler := NewServer(store, cfg.StaticDir)
+	if cfg.SMTP.Enabled {
+		mailer, mailerErr := NewSMTPMailer(cfg.SMTP)
+		if mailerErr != nil {
+			log.Fatalf("SMTP configuration is invalid: %v", mailerErr)
+		}
+		handler.setExternalMailSender(mailer)
+		log.Printf("CGU SMTP external delivery enabled (host=%s port=%d tls=%s)", cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.TLSMode)
+	}
 	// LoadConfig already applies environment, .env, and config.json precedence.
 	if err := handler.setTrustedProxies(cfg.TrustedProxies); err != nil {
 		log.Fatalf("trusted proxy configuration is invalid: %v", err)
@@ -3121,7 +3235,13 @@ func main() {
 		handler.cookieSecure = cfg.CookieSecure
 	}
 	handler.setStorageMode(storageMode)
-	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+	writeTimeout := 30 * time.Second
+	if cfg.SMTP.Enabled && cfg.SMTP.TimeoutSecond > 0 {
+		// Leave a small response window after the SMTP client deadline rather
+		// than silently truncating a configured provider timeout.
+		writeTimeout = time.Duration(cfg.SMTP.TimeoutSecond+5) * time.Second
+	}
+	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: writeTimeout, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	log.Printf("CGU Go service listening on http://%s", addr)
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.ListenAndServe() }()

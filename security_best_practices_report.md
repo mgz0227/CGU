@@ -167,9 +167,36 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
   database writes are parameterized, and failed writes roll back in-memory state.
 - Impact: prevents cross-student mailbox disclosure and avoids treating message
   bodies as executable HTML in the browser.
-- Residual mitigation: the current mailbox is intentionally provider-independent
-  and does not deliver to external SMTP. Add a separately audited mail provider
-  and outbound queue before enabling internet delivery or attachments.
+- Residual mitigation: external delivery is plain-text only and opt-in per
+  message. A production deployment still needs provider-level reputation,
+  bounce/complaint handling, delivery monitoring, and a durable queue if it
+  must tolerate long SMTP outages or high volume. A sending attempt is
+  persisted before the network call; after a restart or timeout it becomes
+  unknown and requires explicit administrator confirmation before retrying.
+  SMTP acceptance is not a final inbox-delivery guarantee.
+
+### GO-SMTP-001: outbound SMTP configuration and header injection (High, fixed)
+
+- Location: `smtp_mailer.go`, `config.go`, and the administrator mailbox flow.
+- Evidence: SMTP is disabled by default; enabled configurations require a
+  validated host/from address, bounded timeout, authenticated TLS by default,
+  and explicit opt-in for plaintext. Recipient and subject values reject CRLF,
+  and the mail client uses a context deadline without logging credentials.
+- Impact: limits accidental plaintext credential exposure, SMTP header
+  injection, and requests that hold an HTTP worker indefinitely.
+- Fix: use the maintained `github.com/wneessen/go-mail` client with mandatory
+  STARTTLS/implicit TLS options, explicit auth modes, UTF-8 plain-text MIME,
+  and sanitized error text in the admin record. Internal storage is committed
+  before any network send; an uncertain status (including post-DATA reset or
+  connection-close errors) is visible and cannot be retried without explicit
+  operator confirmation. External creates require a unique idempotency key,
+  and retries use a conditional database lease so concurrent replicas cannot
+  claim the same row. SMTP sends are bounded below the HTTP write timeout, and
+  production SMTP is refused without MySQL durability.
+- Residual mitigation: inject credentials through a secret manager, restrict
+  outbound egress to the approved relay, configure SPF/DKIM/DMARC and provider
+  rate limits, and monitor failed/bounced messages. This application does not
+  claim delivery success until the SMTP server accepts the message.
 
 ## Deployment requirements
 

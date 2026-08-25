@@ -66,6 +66,32 @@ func TestLoadConfigPrecedenceAndExplicitDatabaseDisable(t *testing.T) {
 	}
 }
 
+func TestLoadConfigSMTPPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(configPath, []byte(`{"smtp":{"enabled":true,"host":"smtp-json.example","port":465,"username":"json-user","password":"json-secret","from":"json@example.com","auth":"auto","tlsMode":"ssl","timeoutSecond":20}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte("CGU_SMTP_HOST=smtp-env.example\nCGU_SMTP_PASSWORD=env-secret\nCGU_SMTP_TIMEOUT_SECONDS=25\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CGU_CONFIG_FILE", configPath)
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("CGU_ENV_FILE", envPath)
+	t.Setenv("ENV_FILE", "")
+	for _, key := range []string{"CGU_SMTP_ENABLED", "CGU_SMTP_HOST", "CGU_SMTP_PORT", "CGU_SMTP_USERNAME", "CGU_SMTP_PASSWORD", "CGU_SMTP_FROM", "CGU_SMTP_FROM_NAME", "CGU_SMTP_AUTH", "CGU_SMTP_TLS_MODE", "CGU_SMTP_HELO", "CGU_SMTP_TIMEOUT_SECONDS", "CGU_SMTP_ALLOW_INSECURE"} {
+		t.Setenv(key, "")
+	}
+	cfg := LoadConfig()
+	if !cfg.SMTP.Enabled || cfg.SMTP.Host != "smtp-env.example" || cfg.SMTP.Password != "env-secret" || cfg.SMTP.Port != 465 || cfg.SMTP.TimeoutSecond != 25 {
+		t.Fatalf("unexpected SMTP config precedence: enabled=%t host=%q port=%d timeout=%d password-set=%t", cfg.SMTP.Enabled, cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.TimeoutSecond, cfg.SMTP.Password != "")
+	}
+	if cfg.SMTP.TLSMode != "ssl" || cfg.SMTP.From != "json@example.com" {
+		t.Fatalf("SMTP config values were not loaded from config.json: tls=%q from=%q", cfg.SMTP.TLSMode, cfg.SMTP.From)
+	}
+}
+
 func TestDefaultStaticDirectory(t *testing.T) {
 	cfg := defaultConfig()
 	if cfg.StaticDir != "web" {

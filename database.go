@@ -111,8 +111,16 @@ CREATE TABLE IF NOT EXISTS cgu_mailbox_messages (
   body_text TEXT NOT NULL,
   created_at VARCHAR(64) NOT NULL,
   read_at VARCHAR(64) NULL,
+  delivery_mode VARCHAR(32) NOT NULL DEFAULT 'internal',
+  external_recipient VARCHAR(255) NOT NULL DEFAULT '',
+  delivery_status VARCHAR(32) NOT NULL DEFAULT 'internal',
+  delivery_error TEXT NULL,
+  delivered_at VARCHAR(64) NOT NULL DEFAULT '',
+  request_key VARCHAR(128) NULL,
+  delivery_started_at VARCHAR(64) NOT NULL DEFAULT '',
   INDEX idx_mailbox_recipient (recipient_id, created_at),
-  INDEX idx_mailbox_unread (recipient_id, read_at)
+  INDEX idx_mailbox_unread (recipient_id, read_at),
+  UNIQUE KEY uq_mailbox_request_key (request_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS cgu_site_content (
   content_key VARCHAR(160) PRIMARY KEY,
@@ -161,6 +169,49 @@ func migrateDatabase(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("database migration: %w", err)
 		}
 	}
+	if err := ensureMailboxDeliveryColumns(ctx, db); err != nil {
+		return fmt.Errorf("database mailbox migration: %w", err)
+	}
+	return nil
+}
+
+// ensureMailboxDeliveryColumns upgrades installations created before SMTP
+// delivery was introduced. Column definitions are static (never built from
+// user input), while existence checks keep the migration idempotent.
+func ensureMailboxDeliveryColumns(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name string
+		def  string
+	}{
+		{name: "delivery_mode", def: "VARCHAR(32) NOT NULL DEFAULT 'internal'"},
+		{name: "external_recipient", def: "VARCHAR(255) NOT NULL DEFAULT ''"},
+		{name: "delivery_status", def: "VARCHAR(32) NOT NULL DEFAULT 'internal'"},
+		{name: "delivery_error", def: "TEXT NULL"},
+		{name: "delivered_at", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+		{name: "request_key", def: "VARCHAR(128) NULL"},
+		{name: "delivery_started_at", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`, "cgu_mailbox_messages", column.name).Scan(&count); err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `ALTER TABLE cgu_mailbox_messages ADD COLUMN `+column.name+` `+column.def); err != nil {
+			return fmt.Errorf("add %s: %w", column.name, err)
+		}
+	}
+	var indexCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`, "cgu_mailbox_messages", "uq_mailbox_request_key").Scan(&indexCount); err != nil {
+		return err
+	}
+	if indexCount == 0 {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE cgu_mailbox_messages ADD UNIQUE INDEX uq_mailbox_request_key (request_key)`); err != nil {
+			return fmt.Errorf("add mailbox request key index: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -182,17 +233,27 @@ func (s *Store) attachDatabase(db *sql.DB) error {
 }
 
 func (s *Store) ensureDatabaseSeedLocked(ctx context.Context) error {
-	// Older builds inserted a fixed student account and related academic rows.
-	// Remove only those exact seeded records; real accounts remain untouched.
+	// Older builds inserted one fixed student account and related academic rows.
+	// Remove every legacy marker used by those builds, even if an operator
+	// edited one field before upgrading. Current accounts use random IDs and
+	// cannot match these historical markers accidentally.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin legacy account cleanup: %w", err)
+	}
 	for _, statement := range []string{
-		`DELETE FROM cgu_enrollments WHERE id = 'enrollment-elements-101'`,
-		`DELETE FROM cgu_grades WHERE id IN ('grade-elm101', 'grade-nat202')`,
-		`DELETE FROM cgu_schedule WHERE id IN ('slot-elm101', 'slot-mondstadt210')`,
-		`DELETE FROM cgu_users WHERE id = 'student' AND username = 'student' AND email = 'student@cgu.local' AND student_id = 'CGU2026001'`,
+		`DELETE FROM cgu_enrollments WHERE id = 'enrollment-elements-101' OR student_id IN ('student', 'CGU2026001') OR student_id IN (SELECT id FROM cgu_users WHERE id = 'student' OR (role_name = 'student' AND (username = 'student' OR email = 'student@cgu.local' OR student_id = 'CGU2026001')))`,
+		`DELETE FROM cgu_grades WHERE id IN ('grade-elm101', 'grade-nat202') OR student_id IN ('student', 'CGU2026001') OR student_id IN (SELECT id FROM cgu_users WHERE id = 'student' OR (role_name = 'student' AND (username = 'student' OR email = 'student@cgu.local' OR student_id = 'CGU2026001')))`,
+		`DELETE FROM cgu_schedule WHERE id IN ('slot-elm101', 'slot-mondstadt210') OR student_id IN ('student', 'CGU2026001') OR student_id IN (SELECT id FROM cgu_users WHERE id = 'student' OR (role_name = 'student' AND (username = 'student' OR email = 'student@cgu.local' OR student_id = 'CGU2026001')))`,
+		`DELETE FROM cgu_users WHERE id = 'student' OR (role_name = 'student' AND (username = 'student' OR email = 'student@cgu.local' OR student_id = 'CGU2026001'))`,
 	} {
-		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			_ = tx.Rollback()
 			return fmt.Errorf("remove legacy account data: %w", err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit legacy account cleanup: %w", err)
 	}
 
 	admin, ok := s.users["admin"]
@@ -200,7 +261,7 @@ func (s *Store) ensureDatabaseSeedLocked(ctx context.Context) error {
 		return fmt.Errorf("bootstrap administrator is not configured")
 	}
 	var conflictingID string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM cgu_users WHERE username = ? AND id <> ? LIMIT 1`, admin.Username, admin.ID).Scan(&conflictingID)
+	err = s.db.QueryRowContext(ctx, `SELECT id FROM cgu_users WHERE username = ? AND id <> ? LIMIT 1`, admin.Username, admin.ID).Scan(&conflictingID)
 	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("check bootstrap administrator username: %w", err)
 	}
@@ -422,7 +483,11 @@ func loadAdmissions(ctx context.Context, db *sql.DB) ([]*AdmissionApplication, e
 }
 
 func loadMailbox(ctx context.Context, db *sql.DB) ([]*MailboxMessage, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, recipient_id, sender_id, sender_name, subject_text, body_text, created_at, read_at FROM cgu_mailbox_messages ORDER BY created_at DESC`)
+	leaseCutoff := time.Now().UTC().Add(-mailboxDeliveryLease).Format(time.RFC3339)
+	if _, err := db.ExecContext(ctx, `UPDATE cgu_mailbox_messages SET delivery_status = 'unknown', delivery_error = 'SMTP outcome unknown after an expired delivery lease; confirm the relay did not accept it before retrying', delivery_started_at = '' WHERE delivery_status IN ('sending', 'pending') AND (delivery_started_at = '' OR delivery_started_at < ?)`, leaseCutoff); err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, recipient_id, sender_id, sender_name, subject_text, body_text, created_at, read_at, delivery_mode, external_recipient, delivery_status, delivery_error, delivered_at, request_key, delivery_started_at FROM cgu_mailbox_messages ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -430,12 +495,39 @@ func loadMailbox(ctx context.Context, db *sql.DB) ([]*MailboxMessage, error) {
 	result := make([]*MailboxMessage, 0)
 	for rows.Next() {
 		item := &MailboxMessage{}
-		var readAt sql.NullString
-		if err := rows.Scan(&item.ID, &item.RecipientID, &item.SenderID, &item.SenderName, &item.Subject, &item.Body, &item.CreatedAt, &readAt); err != nil {
+		var readAt, deliveryMode, externalRecipient, deliveryStatus, deliveryError, deliveredAt, requestKey, deliveryStartedAt sql.NullString
+		if err := rows.Scan(&item.ID, &item.RecipientID, &item.SenderID, &item.SenderName, &item.Subject, &item.Body, &item.CreatedAt, &readAt, &deliveryMode, &externalRecipient, &deliveryStatus, &deliveryError, &deliveredAt, &requestKey, &deliveryStartedAt); err != nil {
 			return nil, err
 		}
 		if readAt.Valid {
 			item.ReadAt = readAt.String
+		}
+		if deliveryMode.Valid {
+			item.DeliveryMode = deliveryMode.String
+		}
+		if externalRecipient.Valid {
+			item.ExternalRecipient = externalRecipient.String
+		}
+		if deliveryStatus.Valid {
+			item.DeliveryStatus = deliveryStatus.String
+		}
+		if deliveryError.Valid {
+			item.DeliveryError = deliveryError.String
+		}
+		if deliveredAt.Valid {
+			item.DeliveredAt = deliveredAt.String
+		}
+		if requestKey.Valid {
+			item.RequestKey = requestKey.String
+		}
+		if deliveryStartedAt.Valid {
+			item.DeliveryStartedAt = deliveryStartedAt.String
+		}
+		if strings.TrimSpace(item.DeliveryMode) == "" {
+			item.DeliveryMode = mailboxDeliveryModeInternal
+		}
+		if strings.TrimSpace(item.DeliveryStatus) == "" {
+			item.DeliveryStatus = mailboxDeliveryInternal
 		}
 		result = append(result, item)
 	}
@@ -461,16 +553,14 @@ func loadSiteContent(ctx context.Context, db *sql.DB) ([]SiteContent, error) {
 	return result, rows.Err()
 }
 
-func (s *Store) persistEnrollmentLocked(item *Enrollment) {
+func (s *Store) persistEnrollmentLocked(item *Enrollment) error {
 	if s.db == nil || item == nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_enrollments (id, student_id, course_id, term_name, status_name) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status_name=VALUES(status_name), term_name=VALUES(term_name)`, item.ID, item.StudentID, item.CourseID, item.Term, item.Status)
-	if err != nil {
-		log.Printf("CGU database write warning (enrollment): %v", err)
-	}
+	return err
 }
 
 func (s *Store) persistUserLocked(item *User) {
@@ -532,28 +622,24 @@ func (s *Store) deleteSchedulePersistedLocked(id string) error {
 	return err
 }
 
-func (s *Store) persistCourseLocked(item *Course) {
+func (s *Store) persistCourseLocked(item *Course) error {
 	if s.db == nil || item == nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_courses (id, code, name_zh, name_en, department, teacher, credits, description, capacity, course_type, term_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE code=VALUES(code), name_zh=VALUES(name_zh), name_en=VALUES(name_en), department=VALUES(department), teacher=VALUES(teacher), credits=VALUES(credits), description=VALUES(description), capacity=VALUES(capacity), course_type=VALUES(course_type), term_name=VALUES(term_name)`, item.ID, item.Code, item.NameZh, item.NameEn, item.Department, item.Teacher, item.Credits, item.Description, item.Capacity, item.Type, item.Term)
-	if err != nil {
-		log.Printf("CGU database write warning (course): %v", err)
-	}
+	return err
 }
 
-func (s *Store) persistAnnouncementLocked(item *Announcement) {
+func (s *Store) persistAnnouncementLocked(item *Announcement) error {
 	if s.db == nil || item == nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_announcements (id, title_zh, title_en, content_zh, content_en, type_name, audience_name, course_id, published_at, published_flag, author_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE title_zh=VALUES(title_zh), title_en=VALUES(title_en), content_zh=VALUES(content_zh), content_en=VALUES(content_en), type_name=VALUES(type_name), audience_name=VALUES(audience_name), course_id=VALUES(course_id), published_at=VALUES(published_at), published_flag=VALUES(published_flag), author_name=VALUES(author_name)`, item.ID, item.TitleZh, item.TitleEn, item.ContentZh, item.ContentEn, item.Type, item.Audience, item.CourseID, item.PublishedAt, item.Published, item.Author)
-	if err != nil {
-		log.Printf("CGU database write warning (announcement): %v", err)
-	}
+	return err
 }
 
 func (s *Store) persistAdmissionLocked(item *AdmissionApplication) error {
@@ -572,7 +658,15 @@ func (s *Store) persistMailboxLocked(item *MailboxMessage) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_mailbox_messages (id, recipient_id, sender_id, sender_name, subject_text, body_text, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE recipient_id=VALUES(recipient_id), sender_id=VALUES(sender_id), sender_name=VALUES(sender_name), subject_text=VALUES(subject_text), body_text=VALUES(body_text), created_at=VALUES(created_at), read_at=VALUES(read_at)`, item.ID, item.RecipientID, item.SenderID, item.SenderName, item.Subject, item.Body, item.CreatedAt, nullableString(item.ReadAt))
+	deliveryMode := strings.TrimSpace(item.DeliveryMode)
+	if deliveryMode == "" {
+		deliveryMode = mailboxDeliveryModeInternal
+	}
+	deliveryStatus := strings.TrimSpace(item.DeliveryStatus)
+	if deliveryStatus == "" {
+		deliveryStatus = mailboxDeliveryInternal
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_mailbox_messages (id, recipient_id, sender_id, sender_name, subject_text, body_text, created_at, read_at, delivery_mode, external_recipient, delivery_status, delivery_error, delivered_at, request_key, delivery_started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE recipient_id=VALUES(recipient_id), sender_id=VALUES(sender_id), sender_name=VALUES(sender_name), subject_text=VALUES(subject_text), body_text=VALUES(body_text), created_at=VALUES(created_at), read_at=VALUES(read_at), delivery_mode=VALUES(delivery_mode), external_recipient=VALUES(external_recipient), delivery_status=VALUES(delivery_status), delivery_error=VALUES(delivery_error), delivered_at=VALUES(delivered_at), request_key=VALUES(request_key), delivery_started_at=VALUES(delivery_started_at)`, item.ID, item.RecipientID, item.SenderID, item.SenderName, item.Subject, item.Body, item.CreatedAt, nullableString(item.ReadAt), deliveryMode, item.ExternalRecipient, deliveryStatus, item.DeliveryError, item.DeliveredAt, nullableString(item.RequestKey), item.DeliveryStartedAt)
 	return err
 }
 
@@ -603,35 +697,38 @@ func (s *Store) persistSiteContentLocked(item *SiteContent) error {
 	return err
 }
 
-func (s *Store) deleteCoursePersistedLocked(id string) {
+func (s *Store) deleteCoursePersistedLocked(id string) error {
 	if s.db == nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM cgu_courses WHERE id = ?`, id); err != nil {
-		log.Printf("CGU database write warning (course delete): %v", err)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM cgu_enrollments WHERE course_id = ?`, id); err != nil {
-		log.Printf("CGU database write warning (enrollment cleanup): %v", err)
+	for _, statement := range []string{
+		`DELETE FROM cgu_courses WHERE id = ?`,
+		`DELETE FROM cgu_enrollments WHERE course_id = ?`,
+		`DELETE FROM cgu_grades WHERE course_id = ?`,
+		`DELETE FROM cgu_schedule WHERE course_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement, id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM cgu_grades WHERE course_id = ?`, id); err != nil {
-		log.Printf("CGU database write warning (grade cleanup): %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM cgu_schedule WHERE course_id = ?`, id); err != nil {
-		log.Printf("CGU database write warning (schedule cleanup): %v", err)
-	}
+	return tx.Commit()
 }
 
-func (s *Store) deleteAnnouncementPersistedLocked(id string) {
+func (s *Store) deleteAnnouncementPersistedLocked(id string) error {
 	if s.db == nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM cgu_announcements WHERE id = ?`, id); err != nil {
-		log.Printf("CGU database write warning (announcement delete): %v", err)
-	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM cgu_announcements WHERE id = ?`, id)
+	return err
 }
 
 func (s *Store) deleteAdmissionPersistedLocked(id string) error {

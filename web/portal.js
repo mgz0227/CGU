@@ -36,11 +36,13 @@
   };
 
   class ApiError extends Error {
-    constructor(message, status = 0, code = '') {
+    constructor(message, status = 0, code = '', payload = null) {
       super(message);
       this.name = 'ApiError';
       this.status = status;
       this.code = code;
+      this.payload = payload;
+      this.details = payload?.details ?? null;
       this.network = status === 0;
     }
   }
@@ -81,7 +83,7 @@
     const errorMessage = typeof errorValue === 'string' ? (payload?.message || errorValue) : errorValue?.message;
     if (!response.ok || payload?.ok === false) {
       const errorCode = typeof errorValue === 'string' ? errorValue : errorValue?.code || '';
-      throw new ApiError(errorMessage || response.statusText || I18N.t('common.error'), response.status, errorCode);
+      throw new ApiError(errorMessage || response.statusText || I18N.t('common.error'), response.status, errorCode, payload);
     }
     return payload?.data ?? payload ?? {};
   };
@@ -271,8 +273,16 @@
     recipientId: value.recipientId ?? value.recipient_id ?? '',
     recipientName: value.recipientName ?? value.recipient_name ?? '',
     recipientStudentId: value.recipientStudentId ?? value.recipient_student_id ?? '',
-    recipientEmail: value.recipientEmail ?? value.recipient_email ?? ''
+    recipientEmail: value.recipientEmail ?? value.recipient_email ?? '',
+    deliveryMode: value.deliveryMode ?? value.delivery_mode ?? 'internal',
+    externalRecipient: value.externalRecipient ?? value.external_recipient ?? '',
+    deliveryStatus: value.deliveryStatus ?? value.delivery_status ?? 'internal',
+    deliveryError: value.deliveryError ?? value.delivery_error ?? '',
+    deliveredAt: value.deliveredAt ?? value.delivered_at ?? ''
   });
+
+  const mailboxDeliveryLabel = (status) => I18N.t(({ internal: 'admin.deliveryInternal', pending: 'admin.deliveryPending', sending: 'admin.deliverySending', sent: 'admin.deliverySent', failed: 'admin.deliveryFailed', not_configured: 'admin.deliveryNotConfigured', unknown: 'admin.deliveryUnknown' }[status] || 'admin.deliveryInternal'));
+  const mailboxDeliveryClass = (status) => status === 'failed' || status === 'not_configured' || status === 'unknown' ? ' is-full' : status === 'pending' || status === 'sending' ? ' is-progress' : '';
 
   const showToast = (message) => {
     const toast = document.querySelector('[data-toast]');
@@ -307,6 +317,13 @@
     const textNode = button.querySelector('[data-i18n]');
     if (textNode && labelKey) textNode.textContent = I18N.t(labelKey);
     button.classList.toggle('is-loading', loading);
+  };
+
+  const newRequestKey = () => {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    window.crypto?.getRandomValues?.(bytes);
+    return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('') || `${Date.now()}-${Math.random()}`;
   };
 
   const handleLogin = () => {
@@ -764,7 +781,14 @@
     const list = document.querySelector('[data-admin-mailbox-list]');
     document.querySelectorAll('[data-admin-mailbox-count]').forEach((node) => { node.textContent = String(state.adminMailbox.length); });
     if (!list) return;
-    list.innerHTML = state.adminMailbox.length ? state.adminMailbox.map((item) => `<article class="mailbox-item admin-mailbox-item${item.read ? '' : ' is-unread'}"><div class="mailbox-item-heading"><div><span class="announcement-type">${escapeHTML(item.recipientStudentId || item.recipientEmail || '—')}</span><h3>${escapeHTML(item.subject || '—')}</h3></div><time>${escapeHTML(formatDate(item.createdAt, true))}</time></div><p class="mailbox-sender">${escapeHTML(item.recipientName || '—')} · ${escapeHTML(item.recipientEmail || '—')}</p><p class="mailbox-body">${escapeHTML(item.body).replace(/\n/g, '<br>')}</p><div class="mailbox-item-actions"><span class="status-pill${item.read ? '' : ' is-progress'}">${escapeHTML(item.read ? I18N.t('admin.read') : I18N.t('admin.unread'))}</span></div></article>`).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noMailboxMessages'))}</p>`;
+    list.innerHTML = state.adminMailbox.length ? state.adminMailbox.map((item) => {
+      const status = item.deliveryStatus || 'internal';
+      const retryable = status === 'failed' || status === 'not_configured' || status === 'unknown';
+      const deliveryTarget = item.externalRecipient ? `<span>${escapeHTML(I18N.t('admin.deliveryTarget'))}: ${escapeHTML(item.externalRecipient)}</span>` : '';
+      const deliveryError = item.deliveryError ? `<small class="mailbox-delivery-error">${escapeHTML(item.deliveryError)}</small>` : '';
+      const retry = retryable ? `<button class="table-action" type="button" data-retry-mailbox="${escapeHTML(item.id)}" data-retry-confirm="${status === 'unknown' ? 'true' : 'false'}">${escapeHTML(I18N.t('admin.retryDelivery'))}</button>` : '';
+      return `<article class="mailbox-item admin-mailbox-item${item.read ? '' : ' is-unread'}"><div class="mailbox-item-heading"><div><span class="announcement-type">${escapeHTML(item.recipientStudentId || item.recipientEmail || '—')}</span><h3>${escapeHTML(item.subject || '—')}</h3></div><time>${escapeHTML(formatDate(item.createdAt, true))}</time></div><p class="mailbox-sender">${escapeHTML(item.recipientName || '—')} · ${escapeHTML(item.recipientEmail || '—')}</p><p class="mailbox-body">${escapeHTML(item.body).replace(/\n/g, '<br>')}</p><div class="mailbox-delivery-meta"><span class="status-pill${mailboxDeliveryClass(status)}">${escapeHTML(mailboxDeliveryLabel(status))}</span>${deliveryTarget}</div>${deliveryError}<div class="mailbox-item-actions"><span class="status-pill${item.read ? '' : ' is-progress'}">${escapeHTML(item.read ? I18N.t('admin.read') : I18N.t('admin.unread'))}</span>${retry}</div></article>`;
+    }).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noMailboxMessages'))}</p>`;
   };
 
   const renderAdminLoadError = () => {
@@ -911,24 +935,59 @@
 
   const mailboxPayload = (form) => {
     const values = Object.fromEntries(new FormData(form).entries());
-    return { studentId: values.studentId?.trim(), subject: values.subject?.trim(), body: values.body?.trim() };
+    return { studentId: values.studentId?.trim(), subject: values.subject?.trim(), body: values.body?.trim(), external: form.elements.external?.checked === true, idempotencyKey: form.dataset.mailboxRequestKey || '' };
   };
 
   const handleAdminMailbox = () => {
     const form = document.querySelector('[data-mailbox-form]');
     if (!form) return;
+    const submit = form.querySelector('button[type="submit"]');
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       if (!form.checkValidity()) { showToast(I18N.t('admin.required')); form.reportValidity(); return; }
+      form.dataset.mailboxRequestKey ||= newRequestKey();
+      setButtonLoading(submit, true, 'admin.sendingMessage');
       try {
         const result = await adminRequest('/admin/mailbox', 'POST', mailboxPayload(form));
-        state.adminMailbox.unshift(normalizeAdminMailbox(result?.message || result));
+        const message = normalizeAdminMailbox(result?.message || result);
+        state.adminMailbox.unshift(message);
+        delete form.dataset.mailboxRequestKey;
         form.reset();
         renderAdmin();
-        showToast(I18N.t('admin.messageSent'));
+        showToast(message.deliveryStatus === 'sent' ? I18N.t('admin.smtpSent') : message.deliveryStatus === 'failed' ? I18N.t('admin.smtpFailed') : message.deliveryStatus === 'unknown' ? I18N.t('admin.smtpUnknown') : message.deliveryStatus === 'not_configured' ? I18N.t('admin.smtpNotConfigured') : result?.replayed ? I18N.t('admin.messageAlreadyRecorded') : I18N.t('admin.messageSent'));
       } catch (error) {
+        if (error.details?.id) {
+          const details = normalizeAdminMailbox(error.details);
+          state.adminMailbox = [details, ...state.adminMailbox.filter((item) => String(item.id) !== String(details.id))];
+          renderAdminMailbox();
+        }
         if (isAuthError(error)) redirectToLogin();
         else showToast(error.message || I18N.t('admin.error'));
+      } finally {
+        setButtonLoading(submit, false, 'admin.sendMessage');
+      }
+    });
+    document.querySelector('[data-admin-mailbox-list]')?.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-retry-mailbox]');
+      if (!button) return;
+      const id = button.dataset.retryMailbox;
+      const confirmUnknown = button.dataset.retryConfirm === 'true' && window.confirm(I18N.t('admin.confirmUnknownDelivery'));
+      if (button.dataset.retryConfirm === 'true' && !confirmUnknown) return;
+      button.disabled = true;
+      try {
+        const result = await adminRequest(`/admin/mailbox/${encodeURIComponent(id)}/retry`, 'POST', { confirmUnknown });
+        const updated = normalizeAdminMailbox(result?.message || result);
+        state.adminMailbox = state.adminMailbox.map((item) => String(item.id) === String(id) ? updated : item);
+        renderAdmin();
+        showToast(updated.deliveryStatus === 'sent' ? I18N.t('admin.smtpSent') : updated.deliveryStatus === 'unknown' ? I18N.t('admin.smtpUnknown') : updated.deliveryStatus === 'not_configured' ? I18N.t('admin.smtpNotConfigured') : I18N.t('admin.smtpFailed'));
+      } catch (error) {
+        button.disabled = false;
+        if (error.details?.id) {
+          const details = normalizeAdminMailbox(error.details);
+          state.adminMailbox = state.adminMailbox.map((item) => String(item.id) === String(details.id) ? details : item);
+          renderAdminMailbox();
+        }
+        if (isAuthError(error)) redirectToLogin(); else showToast(error.message || I18N.t('admin.error'));
       }
     });
   };

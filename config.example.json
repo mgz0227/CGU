@@ -16,6 +16,20 @@
     "maxOpenConns": 10,
     "maxIdleConns": 5
   },
+  "smtp": {
+    "enabled": false,
+    "host": "smtp.example.com",
+    "port": 587,
+    "username": "",
+    "password": "",
+    "from": "admissions@example.com",
+    "fromName": "CGU Admissions",
+    "auth": "auto",
+    "tlsMode": "starttls",
+    "helo": "",
+    "timeoutSecond": 15,
+    "allowInsecure": false
+  },
   "staticDir": "web",
   "cookieSecure": false,
   "publicOrigin": "",

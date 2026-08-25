@@ -73,6 +73,11 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
 .login-panel { width: 100%; max-width: 430px; padding: 37px 38px 27px; color: var(--portal-ink); background: var(--portal-paper); box-shadow: 0 26px 75px rgba(0, 0, 0, .25); }
 .portal-form { display: grid; gap: 17px; }
 .portal-form label { display: grid; gap: 7px; color: var(--portal-muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+.portal-form label.checkbox-field { display: flex; align-items: flex-start; gap: 10px; margin-top: 2px; color: var(--portal-muted); font-weight: 400; letter-spacing: 0; }
+.portal-form .checkbox-field input { width: 17px; min-width: 17px; height: 17px; min-height: 17px; margin: 1px 0 0; padding: 0; accent-color: var(--portal-coral); }
+.checkbox-field span { display: grid; gap: 4px; }
+.checkbox-field strong { color: var(--portal-ink); font-size: 12px; font-weight: 700; }
+.checkbox-field small { color: var(--portal-muted); font-size: 10px; font-weight: 400; line-height: 1.5; }
 .portal-form input, .portal-form select, .portal-form textarea { width: 100%; min-height: 45px; padding: 9px 12px; border: 1px solid rgba(16, 37, 43, .25); border-radius: 0; color: var(--portal-ink); background: rgba(255, 253, 248, .8); font-size: 13px; }
 .portal-form textarea { min-height: 90px; resize: vertical; }
 .portal-form input::placeholder { color: rgba(16, 37, 43, .4); }
@@ -179,6 +184,8 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
 .mailbox-item-heading time { flex: 0 0 auto; color: var(--portal-muted); font-size: 10px; }
 .mailbox-sender { margin: 8px 0 0; color: var(--portal-muted); font-size: 11px; }
 .mailbox-body { margin: 13px 0 0; color: var(--portal-muted); font-size: 13px; line-height: 1.8; white-space: normal; overflow-wrap: anywhere; }
+.mailbox-delivery-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 13px; margin-top: 13px; color: var(--portal-muted); font-size: 10px; }
+.mailbox-delivery-error { display: block; margin-top: 7px; color: #a44735; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
 .mailbox-item-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 .admin-mailbox-list { max-height: 620px; overflow-y: auto; padding-right: 5px; }
 .admin-mailbox-item { padding-left: 4px; padding-right: 4px; }
