@@ -73,6 +73,15 @@ SMTP 集成负责从 CGU 向联系邮箱发送通知和教务邮件；学校邮�
 
 对应环境变量为 `CGU_PUBLIC_ORIGIN=https://cgu.edu.kg` 和 `CGU_COOKIE_SECURE=true`。`publicOrigin` 必须是没有路径、查询或片段的 `http://`/`https://` 来源；它用于 TLS 在反向代理终止时的登录和 CSRF 同源校验，反向代理部署必须配置此项。未配置时，服务只按 Go 监听器实际看到的 HTTP/HTTPS 方案接受当前 `Host`，且不会信任任意 `X-Forwarded-*` 请求头。若需要让登录/招生限流识别真实客户端地址，请在私有配置中设置 `CGU_TRUSTED_PROXIES`（逗号分隔的代理 IP/CIDR）；只有来自这些网段的连接才会读取 `X-Forwarded-For`，默认值为空。反向代理/WAF 仍应配置 TLS、请求体限制和边缘限流；安全审计记录见 [`security_best_practices_report.md`](security_best_practices_report.md)。
 
+反向代理必须保留原始 `Host`，并将站点别名重定向到配置的规范来源。例如公网来源为 `https://cgu.example` 时，可在代理层加入：
+
+```nginx
+if ($host = www.cgu.example) { return 301 https://cgu.example$request_uri; }
+proxy_set_header Host $host;
+```
+
+服务本身也会对静态页面执行同样的 `www` 规范化。登录、后台和教务页面引用 `/assets/vX.Y.Z/` 下的版本化 JavaScript/CSS，部署时必须同步整个 `web/` 目录，不能只替换单个 HTML 文件；这样可以避免代理缓存把新 HTML 与旧脚本拼在一起。版本化资源仍发送 `no-cache` 校验头，发布新版本时只需更新页面引用和对应目录。
+
 ## 页面与接口
 
 - `/`：CGU 招生首页，支持中文/英文切换和申请意向表单

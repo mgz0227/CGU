@@ -573,10 +573,18 @@ func TestStaticRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.HasSuffix(route, "/") && !strings.Contains(string(body), `href="/portal.css"`) && !strings.Contains(string(body), `href="/styles.css"`) {
+		if strings.HasSuffix(route, "/") && !strings.Contains(string(body), `assets/v1.5.7`) && !strings.Contains(string(body), `href="/portal.css"`) && !strings.Contains(string(body), `href="/styles.css"`) {
 			t.Fatalf("slash route %s did not use root-relative assets", route)
 		}
 	}
+	versionedAsset, err := http.Get(server.URL + "/assets/v1.5.7/portal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if versionedAsset.StatusCode != http.StatusOK {
+		t.Fatalf("versioned portal asset status = %d", versionedAsset.StatusCode)
+	}
+	versionedAsset.Body.Close()
 	asset, err := http.Get(server.URL + "/portal.js")
 	if err != nil {
 		t.Fatal(err)
@@ -593,6 +601,21 @@ func TestStaticRoutes(t *testing.T) {
 		t.Fatalf("unknown static route status = %d", response.StatusCode)
 	}
 	response.Body.Close()
+}
+
+func TestConfiguredPublicOriginRedirectsWWWStaticRequests(t *testing.T) {
+	server := NewServer(NewStoreWithAdmin(testAdminUsername, testAdminPassword), "web")
+	server.publicOrigin = "https://cgu.example.test"
+	request := httptest.NewRequest(http.MethodGet, "http://www.cgu.example.test/login?next=%2Fadmin", nil)
+	request.Host = "www.cgu.example.test"
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusMovedPermanently {
+		t.Fatalf("www redirect status = %d, want %d", recorder.Code, http.StatusMovedPermanently)
+	}
+	if got, want := recorder.Header().Get("Location"), "https://cgu.example.test/login?next=%2Fadmin"; got != want {
+		t.Fatalf("www redirect location = %q, want %q", got, want)
+	}
 }
 
 func TestPublicCourseCatalogDownload(t *testing.T) {
@@ -794,6 +817,21 @@ func TestAdmissionNotesAreEditableWithoutChangingDecision(t *testing.T) {
 	cleared, apiError := store.updateAdmission(application.ID, AdmissionApplicationInput{ClearNotes: boolPtr(true)})
 	if apiError != nil || cleared == nil || cleared.Notes != "" || cleared.Status != "pending" {
 		t.Fatalf("admission notes clear = %#v, error=%#v", cleared, apiError)
+	}
+}
+
+func TestLegacyAcceptedAdmissionCanBeEditedBeforeProvisioning(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	application, apiError := store.createAdmission(AdmissionApplicationInput{Name: "旧申请人", Email: "legacy@example.com", School: "综合学院"})
+	if apiError != nil {
+		t.Fatalf("create admission: %v", apiError)
+	}
+	store.admissions[0].Status = "accepted"
+	updated, apiError := store.updateAdmission(application.ID, AdmissionApplicationInput{
+		Name: "修正申请人", Email: "corrected@example.com", School: "至冬学院", Notes: "待补充材料",
+	})
+	if apiError != nil || updated == nil || updated.Name != "修正申请人" || updated.Email != "corrected@example.com" || updated.School != "至冬学院" || updated.Notes != "待补充材料" {
+		t.Fatalf("legacy accepted admission update = %#v, error=%#v", updated, apiError)
 	}
 }
 

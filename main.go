@@ -1244,10 +1244,11 @@ func (s *Store) updateAdmission(id string, input AdmissionApplicationInput) (*Ad
 		if !strings.EqualFold(normalized.Status, item.Status) {
 			return nil, apiErr(http.StatusConflict, "approval_required", "use the approve action to change an application decision")
 		}
-		if strings.EqualFold(item.Status, "accepted") && strings.TrimSpace(item.StudentID) == "" {
-			return nil, apiErr(http.StatusConflict, "approval_incomplete", "approved applications must be completed through the approve action")
-		}
-		if strings.EqualFold(item.Status, "accepted") && (normalized.Name != item.Name || normalized.Email != item.Email || normalized.School != item.School) {
+		// A legacy accepted row can be repaired before a student account exists.
+		// Once provisioning has created the durable student identity, only notes
+		// remain editable so the admission, student, and mailbox records cannot
+		// drift apart.
+		if strings.TrimSpace(item.StudentID) != "" && (normalized.Name != item.Name || normalized.Email != item.Email || normalized.School != item.School) {
 			return nil, apiErr(http.StatusConflict, "admission_already_approved", "an approved applicant profile cannot be changed here")
 		}
 		*item = *normalized
@@ -1711,6 +1712,13 @@ func defaultSiteContent() map[string]*SiteContent {
 		{Key: "admin.admissionApprove", Zh: "同意录取", En: "Approve admission"},
 		{Key: "admin.admissionApproved", Zh: "已自动录取", En: "Automatically admitted"},
 		{Key: "admin.admissionProvisioned", Zh: "学生档案与校内邮箱已建立。", En: "Student record and university mailbox created."},
+		{Key: "admin.admissionApplicant", Zh: "申请人姓名", En: "Applicant name"},
+		{Key: "admin.admissionApplicantEmail", Zh: "联系邮箱", En: "Contact email"},
+		{Key: "admin.admissionApplicantSchool", Zh: "申请学院", En: "Applied school"},
+		{Key: "admin.admissionIdentityLocked", Zh: "学生档案已建立，身份资料不可修改；备注仍可更新。", En: "The student record is provisioned, so identity fields are locked; notes remain editable."},
+		{Key: "admin.saveAdmission", Zh: "保存申请", En: "Save application"},
+		{Key: "admin.savingAdmission", Zh: "保存中…", En: "Saving…"},
+		{Key: "admin.admissionSaved", Zh: "招生申请已更新。", En: "Admissions application updated."},
 		{Key: "admin.admissionCredentials", Zh: "初始登录凭据（仅显示一次）", En: "Initial sign-in details (shown once)"},
 		{Key: "admin.admissionUsername", Zh: "登录账号", En: "Login account"},
 		{Key: "admin.admissionPassword", Zh: "初始密码", En: "Initial password"},
@@ -2842,6 +2850,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleOptions(w, r)
 		return
 	}
+	if s.redirectCanonicalHost(w, r) {
+		return
+	}
 	if !s.originAllowed(r) {
 		writeError(w, apiErr(403, "origin_not_allowed", "request origin is not allowed"))
 		return
@@ -2856,6 +2867,47 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveStatic(w, r)
+}
+
+// redirectCanonicalHost keeps the browser on the configured public origin.
+// In particular, an old www bookmark must not render a page whose API Origin
+// will later be rejected by the same-origin guard. Only static GET/HEAD
+// requests are redirected; state-changing API calls are never rewritten.
+func (s *Server) redirectCanonicalHost(w http.ResponseWriter, r *http.Request) bool {
+	if s == nil || r == nil || r.URL == nil || strings.TrimSpace(s.publicOrigin) == "" || strings.HasPrefix(r.URL.Path, "/api") {
+		return false
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	publicOrigin, ok := normalizeOrigin(s.publicOrigin)
+	if !ok {
+		return false
+	}
+	publicURL, err := url.Parse(publicOrigin)
+	if err != nil {
+		return false
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	requestHost, ok := normalizeRequestHost(r.Host, scheme)
+	if !ok {
+		return false
+	}
+	publicHost, ok := normalizeRequestHost(publicURL.Host, publicURL.Scheme)
+	if !ok || strings.EqualFold(requestHost, publicHost) || strings.HasPrefix(publicHost, "www.") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimPrefix(requestHost, "www."), publicHost) {
+		return false
+	}
+	target := *r.URL
+	target.Scheme = publicURL.Scheme
+	target.Host = publicURL.Host
+	http.Redirect(w, r, target.String(), http.StatusMovedPermanently)
+	return true
 }
 
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
