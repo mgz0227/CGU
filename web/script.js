@@ -121,8 +121,8 @@
       'home.viewAllNews': '查看原神官方新闻',
       'home.featureImageAlt': '日落时分的开阔山野',
       'home.featureTag': 'FEATURED EVENT',
-      'home.featureTitle': '至冬学区开学周：从 7.0 开始新的研究旅程',
-      'home.featureDescription': '原神官方 7.0「无神怜爱的雪国」已将旅途带到至冬，CGU 同步开放至冬研究与极地治理方向。',
+      'home.featureTitle': '至冬研究周：从「凯旋」开始新的研究旅程',
+      'home.featureDescription': '原神官方于 2026 年 8 月 23 日发布「凯旋」与「冰中余烬」等至冬内容，CGU 延续 7.0 至冬研究与极地治理方向。',
       'home.registerEvent': '阅读官方版本资讯',
       'home.newsListAria': '校园新闻列表',
       'home.newsAdmissionsType': 'ADMISSIONS',
@@ -130,9 +130,9 @@
       'home.newsAdmissionsDescription': '本科与研究生项目同步开放申请，首轮材料截止至 10 月 12 日。',
       'home.newsAdmissionsAria': '查看 2026 秋季招生简章',
       'home.newsSnezhnayaType': 'WORLD UPDATE',
-      'home.newsSnezhnayaTitle': '7.0「无神怜爱的雪国」：至冬校区开放',
-      'home.newsSnezhnayaDescription': '根据原神官方版本资讯，至冬成为新的旅途舞台，CGU 开放对应研究方向。',
-      'home.newsSnezhnayaAria': '阅读至冬 7.0 官方新闻',
+      'home.newsSnezhnayaTitle': '至冬官方动态：凯旋与冰中余烬',
+      'home.newsSnezhnayaDescription': '原神官方 8 月 23 日新闻更新了至冬剧情内容，CGU 同步更新研究方向与课程信息。',
+      'home.newsSnezhnayaAria': '阅读至冬最新官方新闻',
       'home.newsCampusType': 'CAMPUS',
       'home.newsCampusTitle': '风之庭院完成第一期开放',
       'home.newsCampusDescription': '蒙德校区新图书馆与夜间自习区正式投入使用。',
@@ -141,6 +141,7 @@
       'home.newsResearchTitle': '「元素与城市」研究团队成立',
       'home.newsResearchDescription': '跨学院研究计划启动，欢迎对城市、能源与文化感兴趣的旅行者加入。',
       'home.newsResearchAria': '查看元素与城市研究计划',
+      'home.newsEmpty': '暂无已发布的校园动态。',
       'home.admissionsKicker': 'YOUR NEXT CHAPTER',
       'home.admissionsTitle': '准备好出发了吗？',
       'home.admissionsDescription': '2026 秋季申请现已开放。带上你的好奇心，向 CGU 发来一封信。',
@@ -271,8 +272,8 @@
       'home.viewAllNews': 'Read official Genshin news',
       'home.featureImageAlt': 'Open mountain landscape at sunset',
       'home.featureTag': 'FEATURED EVENT',
-      'home.featureTitle': 'Snezhnaya opening week: begin a new research journey in 7.0',
-      'home.featureDescription': 'The official Version 7.0 “Everwinter Without Mercy” brings the journey to Snezhnaya; CGU now offers a matching polar studies track.',
+      'home.featureTitle': 'Snezhnaya research week: begin with “Triumphant Return”',
+      'home.featureDescription': 'The official Genshin news page published Snezhnaya stories including “Triumphant Return” and “Embers Beneath the Ice” on 23 August 2026; CGU continues its Version 7.0 polar studies track.',
       'home.registerEvent': 'Read the official version notice',
       'home.newsListAria': 'Campus news list',
       'home.newsAdmissionsType': 'ADMISSIONS',
@@ -280,9 +281,9 @@
       'home.newsAdmissionsDescription': 'Undergraduate and graduate applications are open. The first materials deadline is October 12.',
       'home.newsAdmissionsAria': 'View the Fall 2026 admissions guide',
       'home.newsSnezhnayaType': 'WORLD UPDATE',
-      'home.newsSnezhnayaTitle': 'Version 7.0 “Everwinter Without Mercy”: Snezhnaya campus opens',
-      'home.newsSnezhnayaDescription': 'Following the official update, Snezhnaya becomes the next stage of the journey and CGU opens a related research track.',
-      'home.newsSnezhnayaAria': 'Read the official Snezhnaya 7.0 news',
+      'home.newsSnezhnayaTitle': 'Snezhnaya official updates: “Triumphant Return” and “Embers Beneath the Ice”',
+      'home.newsSnezhnayaDescription': 'The official 23 August news updates the Snezhnaya story; CGU has refreshed its research track and course information.',
+      'home.newsSnezhnayaAria': 'Read the latest official Snezhnaya news',
       'home.newsCampusType': 'CAMPUS',
       'home.newsCampusTitle': 'Windward Courtyard opens its first phase',
       'home.newsCampusDescription': 'The new library and evening study spaces at Mondstadt campus are now open.',
@@ -291,6 +292,7 @@
       'home.newsResearchTitle': '“Elements and Cities” research team launches',
       'home.newsResearchDescription': 'An interdisciplinary research plan begins. Travelers curious about cities, energy, and culture are invited to join.',
       'home.newsResearchAria': 'View the Elements and Cities research plan',
+      'home.newsEmpty': 'No published campus updates yet.',
       'home.admissionsKicker': 'YOUR NEXT CHAPTER',
       'home.admissionsTitle': 'Ready to set out?',
       'home.admissionsDescription': 'Fall 2026 applications are open. Bring your curiosity and send CGU a letter.',
@@ -493,6 +495,92 @@
     }
   };
 
+  // Published announcements are the source of truth for the public campus
+  // news stream. Keep the versioned markup as a first-paint fallback, then
+  // replace it with text nodes from the API so administrator edits are
+  // visible without creating an HTML injection path.
+  let homeAnnouncements = null;
+  const announcementText = (item, field) => {
+    const english = sharedI18n?.locale === 'en';
+    const preferred = english ? item[`${field}En`] : item[`${field}Zh`];
+    const fallback = english ? item[`${field}Zh`] : item[`${field}En`];
+    return String(preferred || fallback || '').trim();
+  };
+  const announcementDate = (value) => {
+    const date = new Date(value || '');
+    if (Number.isNaN(date.getTime())) return { day: '—', year: '' };
+    const locale = sharedI18n?.locale === 'en' ? 'en-US' : 'zh-CN';
+    const parts = new Intl.DateTimeFormat(locale, { month: '2-digit', day: '2-digit', year: 'numeric' }).formatToParts(date);
+    const part = (type) => parts.find((entry) => entry.type === type)?.value || '';
+    return { day: `${part('month')}.${part('day')}`, year: part('year') };
+  };
+  const announcementType = (item) => String(item?.type || 'CAMPUS').trim().toUpperCase().slice(0, 32);
+  const renderHomeAnnouncements = (items) => {
+    const feature = document.querySelector('[data-home-feature]');
+    const newsList = document.querySelector('[data-home-news-list]');
+    if (!feature || !newsList) return;
+    const announcements = Array.isArray(items) ? items.filter((item) => item && announcementText(item, 'title')) : [];
+    feature.hidden = announcements.length === 0;
+    if (announcements.length) {
+      const item = announcements[0];
+      const date = announcementDate(item.publishedAt);
+      const dateNodes = feature.querySelectorAll('.story-date span');
+      if (dateNodes[0]) dateNodes[0].textContent = date.day;
+      if (dateNodes[1]) dateNodes[1].textContent = date.year;
+      const tag = feature.querySelector('.feature-tag');
+      if (tag) tag.textContent = announcementType(item);
+      const title = feature.querySelector('.feature-copy h3');
+      if (title) title.textContent = announcementText(item, 'title');
+      const description = feature.querySelector('.feature-copy p');
+      if (description) description.textContent = announcementText(item, 'content');
+      const link = feature.querySelector('.feature-copy a');
+      if (link) {
+        link.href = '/calendar';
+        link.removeAttribute('target');
+        link.removeAttribute('rel');
+        link.textContent = translate('home.viewCalendar');
+      }
+    }
+    newsList.replaceChildren();
+    announcements.slice(1, 4).forEach((item) => {
+      const date = announcementDate(item.publishedAt);
+      const article = document.createElement('article');
+      article.className = 'news-item';
+      const dateBox = document.createElement('div');
+      dateBox.className = 'news-date';
+      const day = document.createElement('strong'); day.textContent = date.day;
+      const year = document.createElement('span'); year.textContent = date.year;
+      dateBox.append(day, year);
+      const copy = document.createElement('div'); copy.className = 'news-copy';
+      const type = document.createElement('span'); type.className = 'news-type'; type.textContent = announcementType(item);
+      const title = document.createElement('h3'); title.textContent = announcementText(item, 'title');
+      const content = document.createElement('p'); content.textContent = announcementText(item, 'content');
+      copy.append(type, title, content);
+      const link = document.createElement('a');
+      link.className = 'news-arrow'; link.href = '/calendar'; link.textContent = '↗';
+      link.setAttribute('aria-label', `${announcementText(item, 'title')} · ${translate('home.viewCalendar')}`);
+      article.append(dateBox, copy, link);
+      newsList.append(article);
+    });
+    if (!announcements.length) {
+      const empty = document.createElement('p');
+      empty.className = 'empty-state'; empty.textContent = translate('home.newsEmpty');
+      newsList.append(empty);
+    }
+  };
+  const loadHomeAnnouncements = async () => {
+    try {
+      const response = await submitWithTimeout('/api/announcements', { headers: { Accept: 'application/json' }, credentials: 'same-origin' }, 10000);
+      if (!response.ok) throw new Error('announcement request failed');
+      const payload = await response.json();
+      if (!Array.isArray(payload?.announcements)) throw new Error('announcement response invalid');
+      homeAnnouncements = payload.announcements;
+      renderHomeAnnouncements(homeAnnouncements);
+    } catch {
+      // Keep the static, versioned fallback when the public API is unavailable.
+    }
+  };
+
   document.querySelector('.apply-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -551,7 +639,18 @@
   };
   applyManagedAssetsWhenReady();
   document.addEventListener('DOMContentLoaded', updateLocaleControls, { once: true });
-  window.addEventListener('cgu:localechange', () => { updateLocaleControls(); applyManagedAssets(); if (activeProgramKey) renderProgramDialog(activeProgramKey); });
+  window.addEventListener('cgu:localechange', () => { updateLocaleControls(); applyManagedAssets(); if (activeProgramKey) renderProgramDialog(activeProgramKey); if (homeAnnouncements) renderHomeAnnouncements(homeAnnouncements); });
+
+  loadHomeAnnouncements();
+
+  // Section aliases are served by the same managed homepage document. Keep
+  // direct links useful by moving the viewport to the requested university
+  // section after the first paint.
+  const sectionRoutes = { about: 'about', programs: 'programs', admissions: 'admissions', 'campus-life': 'life', news: 'life', contact: 'contact' };
+  const routeKey = window.location.pathname.replace(/^\/+|\/+$/g, '');
+  if (sectionRoutes[routeKey] && !window.location.hash) {
+    window.requestAnimationFrame(() => document.getElementById(sectionRoutes[routeKey])?.scrollIntoView({ block: 'start' }));
+  }
 
   const sections = [...document.querySelectorAll('main section[id]')];
   const navLinks = [...document.querySelectorAll('.desktop-nav a')];

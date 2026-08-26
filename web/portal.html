@@ -78,7 +78,7 @@
       </section>
 
       <section class="portal-section" id="grades" data-portal-section="grades" aria-labelledby="grades-heading">
-        <div class="section-heading-inline"><div><p class="portal-kicker" data-i18n="portal.academicsKicker">ACADEMICS</p><h2 id="grades-heading" data-i18n="portal.grades">成绩单</h2></div><span class="section-count" data-grade-summary>—</span></div>
+        <div class="section-heading-inline"><div><p class="portal-kicker" data-i18n="portal.academicsKicker">ACADEMICS</p><h2 id="grades-heading" data-i18n="portal.grades">成绩单</h2></div><div class="section-heading-actions"><span class="section-count" data-grade-summary>—</span><a class="portal-button portal-button-outline" href="/api/transcript.csv" data-transcript-download download="cgu-transcript.csv"><span data-i18n="portal.downloadTranscript">下载成绩单</span><span aria-hidden="true">↓</span></a></div></div>
         <div class="table-wrap"><table class="data-table"><thead><tr><th data-i18n="portal.gradeCourse">课程</th><th data-i18n="portal.gradeScore">成绩</th><th data-i18n="portal.gradePoint">绩点</th><th data-i18n="portal.gradeTerm">学期</th><th data-i18n="portal.gradeStatus">状态</th></tr></thead><tbody data-grade-list><tr><td colspan="5" class="empty-state" data-i18n="common.loading">加载中…</td></tr></tbody></table></div>
       </section>
 
@@ -105,8 +105,8 @@
           <div><p class="portal-kicker" data-i18n="portal.securityKicker">ACCOUNT SECURITY</p><h3 data-i18n="portal.changePassword">修改密码</h3><p class="admin-section-help" data-i18n="portal.changePasswordHelp">验证当前密码后设置新密码；其他已登录设备会自动退出。</p></div>
           <form class="portal-form password-form" data-password-form novalidate>
             <label><span data-i18n="portal.currentPassword">当前密码</span><input name="currentPassword" type="password" autocomplete="current-password" minlength="12" required data-i18n-attr="placeholder:portal.currentPasswordPlaceholder"></label>
-            <label><span data-i18n="portal.newPassword">新密码</span><input name="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required data-i18n-attr="placeholder:portal.newPasswordPlaceholder"></label>
-            <label><span data-i18n="portal.confirmPassword">确认新密码</span><input name="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required data-i18n-attr="placeholder:portal.confirmPasswordPlaceholder"></label>
+            <label><span data-i18n="portal.newPassword">新密码</span><input name="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="72" required data-i18n-attr="placeholder:portal.newPasswordPlaceholder"></label>
+            <label><span data-i18n="portal.confirmPassword">确认新密码</span><input name="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="72" required data-i18n-attr="placeholder:portal.confirmPasswordPlaceholder"></label>
             <div class="form-alert" data-password-alert role="alert" aria-live="polite"></div>
             <button class="portal-button portal-button-gold" type="submit" data-password-submit><span data-i18n="portal.savePassword">保存新密码</span><span aria-hidden="true">→</span></button>
           </form>

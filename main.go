@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/mail"
@@ -38,18 +39,21 @@ import (
 )
 
 const (
-	sessionCookie    = "cgu_session"
-	sessionTTL       = 8 * time.Hour
-	bodyLimit        = 1 << 20
-	loginWindow      = 5 * time.Minute
-	loginBlock       = 15 * time.Minute
-	loginMaxFails    = 8
-	loginMaxKeys     = 10_000
-	admissionWindow  = time.Hour
-	admissionMax     = 20
-	admissionMaxKeys = 10_000
-	maxSessions      = 50_000
-	dummyBcrypt      = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+	sessionCookie           = "cgu_session"
+	sessionTTL              = 8 * time.Hour
+	bodyLimit               = 1 << 20
+	loginWindow             = 5 * time.Minute
+	loginBlock              = 15 * time.Minute
+	loginMaxFails           = 8
+	loginMaxKeys            = 10_000
+	admissionWindow         = time.Hour
+	admissionMax            = 20
+	admissionMaxKeys        = 10_000
+	maxSessions             = 50_000
+	maxPasswordChecks       = 32
+	maxPasswordBytes        = 72
+	maxLoginIdentifierBytes = 254
+	dummyBcrypt             = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 )
 
 type User struct {
@@ -87,14 +91,18 @@ type Course struct {
 	NameZh        string  `json:"nameZh"`
 	NameEn        string  `json:"nameEn"`
 	Department    string  `json:"department"`
+	DepartmentEn  string  `json:"departmentEn"`
 	Teacher       string  `json:"teacher"`
+	TeacherEn     string  `json:"teacherEn"`
 	Credits       float64 `json:"credits"`
 	Description   string  `json:"description"`
+	DescriptionEn string  `json:"descriptionEn"`
 	Capacity      int     `json:"capacity"`
 	EnrolledCount int     `json:"enrolledCount"`
 	Enrolled      bool    `json:"enrolled"`
 	Type          string  `json:"type"`
 	Term          string  `json:"term"`
+	TermEn        string  `json:"termEn"`
 }
 
 type Enrollment struct {
@@ -335,19 +343,23 @@ type EnrollmentRequest struct {
 }
 
 type CourseInput struct {
-	ID          string   `json:"id"`
-	Code        string   `json:"code"`
-	Name        string   `json:"name"`
-	NameZh      string   `json:"nameZh"`
-	NameEn      string   `json:"nameEn"`
-	Department  string   `json:"department"`
-	Teacher     string   `json:"teacher"`
-	Credits     *float64 `json:"credits"`
-	Description string   `json:"description"`
-	Capacity    *int     `json:"capacity"`
-	Term        string   `json:"term"`
-	Type        string   `json:"type"`
-	ClearFields []string `json:"clearFields"`
+	ID            string   `json:"id"`
+	Code          string   `json:"code"`
+	Name          string   `json:"name"`
+	NameZh        string   `json:"nameZh"`
+	NameEn        string   `json:"nameEn"`
+	Department    string   `json:"department"`
+	DepartmentEn  string   `json:"departmentEn"`
+	Teacher       string   `json:"teacher"`
+	TeacherEn     string   `json:"teacherEn"`
+	Credits       *float64 `json:"credits"`
+	Description   string   `json:"description"`
+	DescriptionEn string   `json:"descriptionEn"`
+	Capacity      *int     `json:"capacity"`
+	Term          string   `json:"term"`
+	TermEn        string   `json:"termEn"`
+	Type          string   `json:"type"`
+	ClearFields   []string `json:"clearFields"`
 }
 
 type AnnouncementInput struct {
@@ -420,9 +432,11 @@ func NewStoreWithAdminAndDomain(username, password, emailDomain string) *Store {
 	}
 	s := &Store{studentEmailDomain: normalizeStudentEmailDomain(emailDomain), users: make(map[string]*User), siteContent: defaultSiteContent()}
 	if strings.TrimSpace(password) != "" {
-		s.users["admin"] = &User{
-			ID: "admin", Username: username, Name: "教务处", Email: "admin@cgu.local", Role: "admin",
-			PasswordHash: hashPassword(password),
+		if passwordHash, err := hashPasswordChecked(password); err == nil {
+			s.users["admin"] = &User{
+				ID: "admin", Username: username, Name: "教务处", Email: "admin@cgu.local", Role: "admin",
+				PasswordHash: passwordHash,
+			}
 		}
 	}
 	s.seed()
@@ -430,6 +444,12 @@ func NewStoreWithAdminAndDomain(username, password, emailDomain string) *Store {
 }
 
 func (s *Store) authenticate(identifier, password string) *User {
+	// bcrypt rejects passwords longer than 72 bytes. Reject them before the
+	// lookup so a legacy PBKDF2 account cannot trigger a failed hash upgrade.
+	if len([]byte(password)) > maxPasswordBytes {
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyBcrypt), []byte("invalid-password"))
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	found := false
@@ -445,8 +465,10 @@ func (s *Store) authenticate(identifier, password string) *User {
 			}
 			// Upgrade hashes created by older builds after a successful login.
 			if strings.HasPrefix(user.PasswordHash, "pbkdf2-sha256$") {
-				user.PasswordHash = hashPassword(password)
-				s.persistUserLocked(user)
+				if passwordHash, err := hashPasswordChecked(password); err == nil {
+					user.PasswordHash = passwordHash
+					s.persistUserLocked(user)
+				}
 			}
 			copy := *user
 			return &copy
@@ -584,7 +606,7 @@ func validateContactEmail(value string) bool {
 }
 
 func validateStudentPassword(value string) bool {
-	return len([]byte(value)) >= 12 && len([]byte(value)) <= 256 && !strings.ContainsAny(value, "\r\n")
+	return len([]byte(value)) >= 12 && len([]byte(value)) <= maxPasswordBytes && !strings.ContainsAny(value, "\r\n")
 }
 
 func (s *Store) studentLoginIdentifiers(username, email, studentID string) []string {
@@ -634,7 +656,7 @@ func (s *Store) createStudent(input StudentInput) (*AdminStudent, *apiError) {
 		return nil, apiErr(http.StatusBadRequest, "invalid_input", "student profile fields are too long")
 	}
 	if !validateStudentPassword(input.Password) {
-		return nil, apiErr(http.StatusBadRequest, "invalid_input", "student password must contain 12 to 256 characters")
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "student password must contain 12 to 72 bytes")
 	}
 	email := strings.TrimSpace(input.Email)
 	if email != "" && !validateContactEmail(email) {
@@ -653,7 +675,14 @@ func (s *Store) createStudent(input StudentInput) (*AdminStudent, *apiError) {
 			return nil, apiErr(http.StatusConflict, "student_exists", "username, studentId, or email already exists")
 		}
 	}
-	item := &User{ID: "student-" + randomID(16), Username: username, Name: name, Email: email, Role: "student", PasswordHash: hashPassword(input.Password), StudentID: studentID, College: college, Year: year}
+	passwordHash, hashErr := hashPasswordChecked(input.Password)
+	if hashErr != nil {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "student password must contain 12 to 72 bytes")
+	}
+	item := &User{ID: "student-" + randomID(16), Username: username, Name: name, Email: email, Role: "student", PasswordHash: passwordHash, StudentID: studentID, College: college, Year: year}
+	if input.Active != nil {
+		item.Disabled = !*input.Active
+	}
 	if err := s.persistUserLockedErr(item); err != nil {
 		return nil, apiErr(http.StatusServiceUnavailable, "student_persistence_failed", "student account could not be saved")
 	}
@@ -713,7 +742,15 @@ func (s *Store) updateStudent(id string, input StudentInput) (*AdminStudent, *ap
 		return nil, apiErr(http.StatusBadRequest, "invalid_input", "a valid email address is required")
 	}
 	if input.Password != "" && !validateStudentPassword(input.Password) {
-		return nil, apiErr(http.StatusBadRequest, "invalid_input", "student password must contain 12 to 256 characters")
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "student password must contain 12 to 72 bytes")
+	}
+	var passwordHash string
+	if input.Password != "" {
+		var hashErr error
+		passwordHash, hashErr = hashPasswordChecked(input.Password)
+		if hashErr != nil {
+			return nil, apiErr(http.StatusBadRequest, "invalid_input", "student password must contain 12 to 72 bytes")
+		}
 	}
 	oldGenerated := studentMailbox(item.StudentID, s.studentEmailDomain)
 	if item.Email == oldGenerated && studentID != item.StudentID && (strings.TrimSpace(input.Email) == "" || strings.EqualFold(strings.TrimSpace(input.Email), oldGenerated)) {
@@ -734,7 +771,7 @@ func (s *Store) updateStudent(id string, input StudentInput) (*AdminStudent, *ap
 		item.Disabled = !*input.Active
 	}
 	if input.Password != "" {
-		item.PasswordHash = hashPassword(input.Password)
+		item.PasswordHash = passwordHash
 	}
 	if err := s.persistUserLockedErr(item); err != nil {
 		*item = previous
@@ -759,13 +796,17 @@ func (s *Store) changeStudentPassword(userID, currentPassword, newPassword strin
 		return nil, apiErr(http.StatusUnauthorized, "current_password_invalid", "current password is incorrect")
 	}
 	if !validateStudentPassword(newPassword) {
-		return nil, apiErr(http.StatusBadRequest, "invalid_input", "new password must contain 12 to 256 characters")
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "new password must contain 12 to 72 bytes")
 	}
 	if newPassword == currentPassword {
 		return nil, apiErr(http.StatusBadRequest, "password_unchanged", "new password must be different from the current password")
 	}
 	previousHash := user.PasswordHash
-	user.PasswordHash = hashPassword(newPassword)
+	passwordHash, hashErr := hashPasswordChecked(newPassword)
+	if hashErr != nil {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "new password must contain 12 to 72 bytes")
+	}
+	user.PasswordHash = passwordHash
 	if err := s.persistUserLockedErr(user); err != nil {
 		user.PasswordHash = previousHash
 		return nil, apiErr(http.StatusServiceUnavailable, "password_persistence_failed", "password could not be saved")
@@ -832,7 +873,7 @@ func (s *Store) catalogCSV(locale string) ([]byte, error) {
 	// Keep the public download UTF-8 friendly for spreadsheet applications.
 	buffer.WriteString("\ufeff")
 	writer := csv.NewWriter(&buffer)
-	if err := writer.Write([]string{"Code", "Name", "Name (Chinese)", "Name (English)", "School", "Teacher", "Credits", "Capacity", "Term", "Type", "Description"}); err != nil {
+	if err := writer.Write([]string{"Code", "Name", "Name (Chinese)", "Name (English)", "School", "School (English)", "Teacher", "Teacher (English)", "Credits", "Capacity", "Term", "Term (English)", "Type", "Description", "Description (English)"}); err != nil {
 		return nil, err
 	}
 	for _, course := range courses {
@@ -840,11 +881,15 @@ func (s *Store) catalogCSV(locale string) ([]byte, error) {
 		if locale == "en" && strings.TrimSpace(course.NameEn) != "" {
 			name = course.NameEn
 		}
-		if err := writer.Write([]string{
-			course.Code, name, course.NameZh, course.NameEn, course.Department, course.Teacher,
-			strconv.FormatFloat(course.Credits, 'f', -1, 64), strconv.Itoa(course.Capacity), course.Term,
-			course.Type, course.Description,
-		}); err != nil {
+		row := []string{
+			course.Code, name, course.NameZh, course.NameEn, course.Department, course.DepartmentEn, course.Teacher, course.TeacherEn,
+			strconv.FormatFloat(course.Credits, 'f', -1, 64), strconv.Itoa(course.Capacity), course.Term, course.TermEn,
+			course.Type, course.Description, course.DescriptionEn,
+		}
+		for index := range row {
+			row[index] = safeCSVCell(row[index])
+		}
+		if err := writer.Write(row); err != nil {
 			return nil, err
 		}
 	}
@@ -853,6 +898,111 @@ func (s *Store) catalogCSV(locale string) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(buffer.String()), nil
+}
+
+// transcriptCSV exports only published grades for one authenticated student.
+// The endpoint is intentionally separate from the registrar-wide grade API so
+// a downloaded transcript can never include draft or in-progress records.
+func (s *Store) transcriptCSV(studentID, locale string) ([]byte, error) {
+	studentID = strings.TrimSpace(studentID)
+	if studentID == "" {
+		return nil, errors.New("student id is required")
+	}
+	s.mu.RLock()
+	student := s.users[studentID]
+	s.mu.RUnlock()
+	if student == nil || student.Role != "student" {
+		return nil, errors.New("student not found")
+	}
+	grades := s.gradesFor(studentID, false)
+	sort.SliceStable(grades, func(i, j int) bool {
+		if grades[i].Term != grades[j].Term {
+			return grades[i].Term < grades[j].Term
+		}
+		return grades[i].CourseCode < grades[j].CourseCode
+	})
+	var buffer strings.Builder
+	buffer.WriteString("\ufeff")
+	writer := csv.NewWriter(&buffer)
+	en := strings.HasPrefix(strings.ToLower(strings.TrimSpace(locale)), "en")
+	if en {
+		if err := writer.Write([]string{"Student ID", "Student", "Course code", "Course", "Term", "Credits", "Score", "Grade point", "Status"}); err != nil {
+			return nil, err
+		}
+	} else if err := writer.Write([]string{"学号", "学生", "课程代码", "课程", "学期", "学分", "成绩", "绩点", "状态"}); err != nil {
+		return nil, err
+	}
+	statusLabel := func(status string) string {
+		if en {
+			switch strings.ToLower(strings.TrimSpace(status)) {
+			case "published":
+				return "Published"
+			case "graded":
+				return "Graded"
+			case "inprogress":
+				return "In progress"
+			case "withdrawn":
+				return "Withdrawn"
+			}
+			return status
+		}
+		switch strings.ToLower(strings.TrimSpace(status)) {
+		case "published":
+			return "已发布"
+		case "graded":
+			return "已评分"
+		case "inprogress":
+			return "进行中"
+		case "withdrawn":
+			return "已撤回"
+		}
+		return status
+	}
+	for _, grade := range grades {
+		courseName := grade.CourseNameZh
+		if en && strings.TrimSpace(grade.CourseNameEn) != "" {
+			courseName = grade.CourseNameEn
+		}
+		row := []string{
+			student.StudentID,
+			student.Name,
+			grade.CourseCode,
+			courseName,
+			grade.Term,
+			strconv.Itoa(grade.Credits),
+			fmt.Sprint(grade.Score),
+			fmt.Sprint(grade.Point),
+			statusLabel(grade.Status),
+		}
+		for index := range row {
+			row[index] = safeCSVCell(row[index])
+		}
+		if err := writer.Write(row); err != nil {
+			return nil, err
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return nil, err
+	}
+	return []byte(buffer.String()), nil
+}
+
+// safeCSVCell prevents spreadsheet applications from interpreting exported
+// values as formulas when a registrar-entered field starts with a formula
+// operator. The apostrophe is retained as an explicit text marker by common
+// spreadsheet programs and does not alter ordinary cells.
+func safeCSVCell(value string) string {
+	trimmed := strings.TrimLeft(value, " \t\r\n")
+	if trimmed == "" {
+		return value
+	}
+	switch trimmed[0] {
+	case '=', '+', '-', '@':
+		return "'" + value
+	default:
+		return value
+	}
 }
 
 func (s *Store) enrollmentsFor(studentID string) []Enrollment {
@@ -867,14 +1017,25 @@ func (s *Store) enrollmentsFor(studentID string) []Enrollment {
 	return result
 }
 
-func (s *Store) gradesFor(studentID string, all bool) []Grade {
+// gradesFor returns one student's grades (or all grades when studentID is
+// empty). Unpublished records are deliberately omitted unless the caller is
+// an administrator. This keeps registrar workflow states out of the student
+// transcript while preserving them for administrative review.
+func (s *Store) gradesFor(studentID string, includeUnpublished bool) []Grade {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]Grade, 0)
 	for _, item := range s.grades {
-		if all || item.StudentID == studentID {
-			result = append(result, *item)
+		if item == nil {
+			continue
 		}
+		if studentID != "" && item.StudentID != studentID {
+			continue
+		}
+		if !includeUnpublished && !strings.EqualFold(strings.TrimSpace(item.Status), "published") {
+			continue
+		}
+		result = append(result, *item)
 	}
 	return result
 }
@@ -922,7 +1083,7 @@ func (s *Store) stats() map[string]int {
 	defer s.mu.RUnlock()
 	students, pending, sections, pendingAdmissions := 0, 0, 0, 0
 	for _, user := range s.users {
-		if user.Role == "student" {
+		if user != nil && user.Role == "student" && !user.Disabled {
 			students++
 		}
 	}
@@ -1199,6 +1360,10 @@ func (s *Store) buildAdmissionApprovalLocked(item *AdmissionApplication, approve
 		return nil, nil, nil, "", apiErr(http.StatusConflict, "external_recipient_invalid", "applicant email is not eligible for notification")
 	}
 	password := newAdmissionInitialPassword()
+	passwordHash, hashErr := hashPasswordChecked(password)
+	if hashErr != nil {
+		return nil, nil, nil, "", apiErr(http.StatusInternalServerError, "password_hash_failed", "student password could not be secured")
+	}
 	approvedBy = strings.TrimSpace(approvedBy)
 	if approvedBy == "" {
 		approvedBy = "admin"
@@ -1206,7 +1371,7 @@ func (s *Store) buildAdmissionApprovalLocked(item *AdmissionApplication, approve
 	approvedAt := time.Now().UTC().Format(time.RFC3339)
 	student := &User{
 		ID: userID, Username: username, Name: item.Name, Email: item.Email, Role: "student",
-		PasswordHash: hashPassword(password), StudentID: studentID, College: item.School,
+		PasswordHash: passwordHash, StudentID: studentID, College: item.School,
 		Year: time.Now().UTC().Format("2006"),
 	}
 	mailbox := &MailboxMessage{
@@ -1439,9 +1604,9 @@ func defaultSiteContent() map[string]*SiteContent {
 		{Key: "home.programJusticeNumber", Zh: "05", En: "05"},
 		{Key: "home.programFlameNumber", Zh: "06", En: "06"},
 		{Key: "home.programPolarNumber", Zh: "07", En: "07"},
-		{Key: "home.featureDate", Zh: "08.12", En: "08.12"},
+		{Key: "home.featureDate", Zh: "08.23", En: "08.23"},
 		{Key: "home.featureYear", Zh: "2026", En: "2026"},
-		{Key: "home.newsSnezhnayaDate", Zh: "08.12", En: "08.12"},
+		{Key: "home.newsSnezhnayaDate", Zh: "08.23", En: "08.23"},
 		{Key: "home.newsSnezhnayaYear", Zh: "2026", En: "2026"},
 		{Key: "home.newsCampusDate", Zh: "08.05", En: "08.05"},
 		{Key: "home.newsCampusYear", Zh: "2026", En: "2026"},
@@ -1454,6 +1619,12 @@ func defaultSiteContent() map[string]*SiteContent {
 		{Key: "home.footerAddress", Zh: "璃月港 · 玉京台 7 号", En: "Liyue Harbor · Yujing Terrace 7"},
 		{Key: "portal.title", Zh: "我的教务空间", En: "My academic space"},
 		{Key: "portal.metaDescription", Zh: "CGU 原神大学学生教务门户", En: "China Genshin University student portal"},
+		{Key: "catalog.title", Zh: "CGU 课程目录 | China Genshin University", En: "CGU Course Catalog | China Genshin University"},
+		{Key: "catalog.metaDescription", Zh: "CGU 原神大学公开课程目录", En: "China Genshin University public course catalog"},
+		{Key: "catalog.titleShort", Zh: "公开课程目录", En: "Public course catalog"},
+		{Key: "catalog.intro", Zh: "查看 CGU 当前开放课程、学院、教师与学期信息；完整双语目录可下载。", En: "Review current CGU courses, schools, instructors, and terms. Download the complete bilingual catalog."},
+		{Key: "catalog.handbookTitle", Zh: "从录取到毕业", En: "From admission to graduation"},
+		{Key: "catalog.handbookBody", Zh: "录取后，教务处会建立学生档案与学校邮箱。登录学生门户即可完成选课、查看课表、阅读公告、查看已发布成绩并修改密码。课程、成绩和招生记录由教务处持续维护；如需帮助，请通过招生办公室联系 CGU。", En: "After admission, the registrar creates your student record and university mailbox. Use the student portal to enroll in courses, review your schedule, read announcements, view published grades, and change your password. CGU maintains course, grade, and admissions records through the registrar; contact the admissions office when you need help."},
 		{Key: "portal.welcome", Zh: "欢迎回来，{name}", En: "Welcome back, {name}"},
 		{Key: "portal.welcomeFallback", Zh: "欢迎回来", En: "Welcome back"},
 		{Key: "portal.academicsKicker", Zh: "ACADEMICS", En: "ACADEMICS"},
@@ -1682,6 +1853,21 @@ func (s *Store) changeEnrollment(studentID, courseID, action string) (*Enrollmen
 	return &copy, nil
 }
 
+func academicBoundedValue(value any, minimum, maximum float64, field string) (string, *apiError) {
+	result, err := academicValue(value)
+	if err != nil || result == "" {
+		return result, err
+	}
+	parsed, parseErr := strconv.ParseFloat(result, 64)
+	if parseErr != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return "", apiErr(http.StatusBadRequest, "invalid_input", field+" must be a finite number")
+	}
+	if parsed < minimum || parsed > maximum {
+		return "", apiErr(http.StatusBadRequest, "invalid_input", fmt.Sprintf("%s must be between %g and %g", field, minimum, maximum))
+	}
+	return result, nil
+}
+
 func academicValue(value any) (string, *apiError) {
 	if value == nil {
 		return "", nil
@@ -1702,6 +1888,20 @@ func academicValue(value any) (string, *apiError) {
 		result = strconv.FormatInt(typed, 10)
 	case uint64:
 		result = strconv.FormatUint(typed, 10)
+	case int8:
+		result = strconv.FormatInt(int64(typed), 10)
+	case int16:
+		result = strconv.FormatInt(int64(typed), 10)
+	case int32:
+		result = strconv.FormatInt(int64(typed), 10)
+	case uint:
+		result = strconv.FormatUint(uint64(typed), 10)
+	case uint8:
+		result = strconv.FormatUint(uint64(typed), 10)
+	case uint16:
+		result = strconv.FormatUint(uint64(typed), 10)
+	case uint32:
+		result = strconv.FormatUint(uint64(typed), 10)
 	default:
 		return "", apiErr(http.StatusBadRequest, "invalid_input", "academic values must be text or numbers")
 	}
@@ -1750,17 +1950,28 @@ func (s *Store) normalizeGradeLocked(input GradeInput, existing *Grade) (*Grade,
 	}
 	if input.Score != nil {
 		var err *apiError
-		score, err = academicValue(input.Score)
+		score, err = academicBoundedValue(input.Score, 0, 100, "score")
 		if err != nil {
 			return nil, err
 		}
 	}
 	if input.Point != nil {
 		var err *apiError
-		point, err = academicValue(input.Point)
+		point, err = academicBoundedValue(input.Point, 0, 4, "point")
 		if err != nil {
 			return nil, err
 		}
+	}
+	// Revalidate preserved values as well as newly supplied values. This keeps
+	// edits from carrying forward malformed legacy rows loaded from MySQL.
+	var valueErr *apiError
+	score, valueErr = academicBoundedValue(score, 0, 100, "score")
+	if valueErr != nil {
+		return nil, valueErr
+	}
+	point, valueErr = academicBoundedValue(point, 0, 4, "point")
+	if valueErr != nil {
+		return nil, valueErr
 	}
 	term := strings.TrimSpace(input.Term)
 	if term == "" && existing != nil {
@@ -1951,6 +2162,28 @@ func (s *Store) normalizeScheduleLocked(input ScheduleInput, existing *ScheduleE
 	return &ScheduleEntry{ID: id, StudentID: student.ID, CourseID: course.ID, CourseCode: course.Code, CourseNameZh: course.NameZh, CourseNameEn: course.NameEn, Day: day, Start: start, End: end, Location: location, Teacher: teacher}, nil
 }
 
+func schedulesOverlap(left, right *ScheduleEntry) bool {
+	if left == nil || right == nil || left.Day != right.Day || !strings.EqualFold(left.StudentID, right.StudentID) {
+		return false
+	}
+	// Times are normalized to zero-padded HH:MM before this check, so lexical
+	// ordering is equivalent to ordering minutes. Equal end/start boundaries
+	// are adjacent classes and are intentionally allowed.
+	return left.Start < right.End && right.Start < left.End
+}
+
+func (s *Store) scheduleConflictLocked(candidate *ScheduleEntry, excludeID string) bool {
+	for _, existing := range s.schedule {
+		if existing == nil || strings.EqualFold(existing.ID, excludeID) {
+			continue
+		}
+		if schedulesOverlap(candidate, existing) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) createSchedule(input ScheduleInput) (*ScheduleEntry, *apiError) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1962,6 +2195,9 @@ func (s *Store) createSchedule(input ScheduleInput) (*ScheduleEntry, *apiError) 
 		if candidate != nil && strings.EqualFold(candidate.ID, item.ID) {
 			return nil, apiErr(http.StatusConflict, "schedule_exists", "schedule entry already exists")
 		}
+	}
+	if s.scheduleConflictLocked(item, "") {
+		return nil, apiErr(http.StatusConflict, "schedule_overlap", "the student already has an overlapping class at this time")
 	}
 	if err := s.persistScheduleLocked(item); err != nil {
 		return nil, apiErr(http.StatusServiceUnavailable, "schedule_persistence_failed", "schedule entry could not be saved")
@@ -1982,6 +2218,9 @@ func (s *Store) updateSchedule(id string, input ScheduleInput) (*ScheduleEntry, 
 		item, err := s.normalizeScheduleLocked(input, candidate)
 		if err != nil {
 			return nil, err
+		}
+		if s.scheduleConflictLocked(item, candidate.ID) {
+			return nil, apiErr(http.StatusConflict, "schedule_overlap", "the student already has an overlapping class at this time")
 		}
 		if persistErr := s.persistScheduleLocked(item); persistErr != nil {
 			return nil, apiErr(http.StatusServiceUnavailable, "schedule_persistence_failed", "schedule entry could not be saved")
@@ -2066,31 +2305,25 @@ func (s *Store) deleteCourse(id string) (*Course, *apiError) {
 	for i, item := range s.courses {
 		if strings.EqualFold(item.ID, id) {
 			copy := *item
+			for _, enrollment := range s.enrollments {
+				if enrollment != nil && strings.EqualFold(enrollment.CourseID, item.ID) {
+					return nil, apiErr(http.StatusConflict, "course_in_use", "courses with enrollment history cannot be deleted")
+				}
+			}
+			for _, grade := range s.grades {
+				if grade != nil && strings.EqualFold(grade.CourseID, item.ID) {
+					return nil, apiErr(http.StatusConflict, "course_in_use", "courses with academic records cannot be deleted")
+				}
+			}
+			for _, entry := range s.schedule {
+				if entry != nil && strings.EqualFold(entry.CourseID, item.ID) {
+					return nil, apiErr(http.StatusConflict, "course_in_use", "courses with schedule records cannot be deleted")
+				}
+			}
 			if err := s.deleteCoursePersistedLocked(item.ID); err != nil {
 				return nil, apiErr(http.StatusServiceUnavailable, "course_persistence_failed", "course could not be deleted")
 			}
 			s.courses = append(s.courses[:i], s.courses[i+1:]...)
-			filteredEnrollments := s.enrollments[:0]
-			for _, enrollment := range s.enrollments {
-				if enrollment == nil || !strings.EqualFold(enrollment.CourseID, item.ID) {
-					filteredEnrollments = append(filteredEnrollments, enrollment)
-				}
-			}
-			s.enrollments = filteredEnrollments
-			filteredGrades := s.grades[:0]
-			for _, grade := range s.grades {
-				if grade == nil || !strings.EqualFold(grade.CourseID, item.ID) {
-					filteredGrades = append(filteredGrades, grade)
-				}
-			}
-			s.grades = filteredGrades
-			filteredSchedule := s.schedule[:0]
-			for _, entry := range s.schedule {
-				if entry == nil || !strings.EqualFold(entry.CourseID, item.ID) {
-					filteredSchedule = append(filteredSchedule, entry)
-				}
-			}
-			s.schedule = filteredSchedule
 			return &copy, nil
 		}
 	}
@@ -2177,9 +2410,13 @@ func normalizeCourse(input CourseInput, existing *Course) (*Course, *apiError) {
 	id := strings.TrimSpace(input.ID)
 	clearNameEn := fieldCleared(input.ClearFields, "nameEn", "name_en")
 	clearDepartment := fieldCleared(input.ClearFields, "department")
+	clearDepartmentEn := fieldCleared(input.ClearFields, "departmentEn", "department_en")
 	clearTeacher := fieldCleared(input.ClearFields, "teacher")
+	clearTeacherEn := fieldCleared(input.ClearFields, "teacherEn", "teacher_en")
 	clearDescription := fieldCleared(input.ClearFields, "description")
+	clearDescriptionEn := fieldCleared(input.ClearFields, "descriptionEn", "description_en")
 	clearTerm := fieldCleared(input.ClearFields, "term")
+	clearTermEn := fieldCleared(input.ClearFields, "termEn", "term_en")
 	clearType := fieldCleared(input.ClearFields, "type", "courseType", "course_type")
 	if existing != nil {
 		if nameZh == "" {
@@ -2202,22 +2439,38 @@ func normalizeCourse(input CourseInput, existing *Course) (*Course, *apiError) {
 		nameEn = nameZh
 	}
 	department := strings.TrimSpace(input.Department)
+	departmentEn := strings.TrimSpace(input.DepartmentEn)
 	teacher := strings.TrimSpace(input.Teacher)
+	teacherEn := strings.TrimSpace(input.TeacherEn)
 	description := strings.TrimSpace(input.Description)
+	descriptionEn := strings.TrimSpace(input.DescriptionEn)
 	term := strings.TrimSpace(input.Term)
+	termEn := strings.TrimSpace(input.TermEn)
 	courseType := strings.TrimSpace(input.Type)
 	if existing != nil {
 		if department == "" && !clearDepartment {
 			department = existing.Department
 		}
+		if departmentEn == "" && !clearDepartmentEn {
+			departmentEn = existing.DepartmentEn
+		}
 		if teacher == "" && !clearTeacher {
 			teacher = existing.Teacher
+		}
+		if teacherEn == "" && !clearTeacherEn {
+			teacherEn = existing.TeacherEn
 		}
 		if description == "" && !clearDescription {
 			description = existing.Description
 		}
+		if descriptionEn == "" && !clearDescriptionEn {
+			descriptionEn = existing.DescriptionEn
+		}
 		if term == "" && !clearTerm {
 			term = existing.Term
+		}
+		if termEn == "" && !clearTermEn {
+			termEn = existing.TermEn
 		}
 		if courseType == "" && !clearType {
 			courseType = existing.Type
@@ -2226,14 +2479,29 @@ func normalizeCourse(input CourseInput, existing *Course) (*Course, *apiError) {
 	if department == "" && !clearDepartment {
 		department = "综合学院"
 	}
+	if departmentEn == "" && !clearDepartmentEn {
+		departmentEn = department
+	}
 	if teacher == "" && !clearTeacher {
 		teacher = "待定"
+	}
+	if teacherEn == "" && !clearTeacherEn {
+		teacherEn = teacher
+	}
+	if descriptionEn == "" && !clearDescriptionEn {
+		descriptionEn = description
 	}
 	if term == "" && !clearTerm {
 		term = "2026-秋"
 	}
+	if termEn == "" && !clearTermEn {
+		termEn = term
+	}
 	if courseType == "" && !clearType {
 		courseType = "elective"
+	}
+	if len([]rune(department)) > 255 || len([]rune(departmentEn)) > 255 || len([]rune(teacher)) > 255 || len([]rune(teacherEn)) > 255 || len([]rune(description)) > 8000 || len([]rune(descriptionEn)) > 8000 || len([]rune(term)) > 64 || len([]rune(termEn)) > 64 {
+		return nil, apiErr(http.StatusBadRequest, "invalid_input", "course text fields are too long")
 	}
 	credits := float64(3)
 	capacity := 40
@@ -2256,7 +2524,7 @@ func normalizeCourse(input CourseInput, existing *Course) (*Course, *apiError) {
 	if id == "" {
 		id = "course-" + randomID(12)
 	}
-	return &Course{ID: id, Code: code, NameZh: nameZh, NameEn: nameEn, Department: department, Teacher: teacher, Credits: credits, Description: description, Capacity: capacity, EnrolledCount: enrolledCount, Type: courseType, Term: term}, nil
+	return &Course{ID: id, Code: code, NameZh: nameZh, NameEn: nameEn, Department: department, DepartmentEn: departmentEn, Teacher: teacher, TeacherEn: teacherEn, Credits: credits, Description: description, DescriptionEn: descriptionEn, Capacity: capacity, EnrolledCount: enrolledCount, Type: courseType, Term: term, TermEn: termEn}, nil
 }
 
 func normalizeAnnouncement(input AnnouncementInput, existing *Announcement) (*Announcement, *apiError) {
@@ -2455,6 +2723,7 @@ type Server struct {
 	sessionsMu        sync.Mutex
 	loginMu           sync.Mutex
 	loginAttempts     map[string]*loginAttempt
+	passwordSlots     chan struct{}
 	admissionMu       sync.Mutex
 	admissionAttempts map[string]*admissionAttempt
 	cookieSecure      bool
@@ -2478,7 +2747,7 @@ func NewServer(store *Store, staticDir string) *Server {
 		staticDir = "web"
 	}
 	secure := strings.EqualFold(os.Getenv("CGU_COOKIE_SECURE"), "1") || strings.EqualFold(os.Getenv("CGU_COOKIE_SECURE"), "true")
-	return &Server{store: store, smtpSlots: make(chan struct{}, 4), smtpTimeout: mailboxExternalSendTimeout, staticDir: staticDir, sessions: make(map[string]session), loginAttempts: make(map[string]*loginAttempt), admissionAttempts: make(map[string]*admissionAttempt), cookieSecure: secure, storageMode: "memory"}
+	return &Server{store: store, smtpSlots: make(chan struct{}, 4), smtpTimeout: mailboxExternalSendTimeout, staticDir: staticDir, sessions: make(map[string]session), loginAttempts: make(map[string]*loginAttempt), passwordSlots: make(chan struct{}, maxPasswordChecks), admissionAttempts: make(map[string]*admissionAttempt), cookieSecure: secure, storageMode: "memory"}
 }
 
 func (s *Server) setExternalMailSender(sender ExternalMailSender) {
@@ -2583,6 +2852,11 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost, http.MethodPatch)
 	case p == "/api/catalog.csv" && r.Method == http.MethodGet:
 		s.downloadCatalog(w, r)
+	case p == "/api/transcript.csv" && r.Method == http.MethodGet:
+		if !s.requireAuth(w, r) {
+			return
+		}
+		s.downloadTranscript(w, r)
 	case p == "/api/courses" && r.Method == http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "courses": s.store.coursesFor(s.currentUser(r), false)})
 	case p == "/api/courses" && r.Method == http.MethodPost:
@@ -2922,26 +3196,47 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiErr(400, "invalid_input", "username and password are required"))
 		return
 	}
-	rateKey := s.loginRateKey(r, identifier)
-	if retry, allowed := s.loginAllowed(rateKey); !allowed {
-		seconds := int(retry / time.Second)
-		if retry%time.Second != 0 {
-			seconds++
+	if len([]byte(identifier)) > maxLoginIdentifierBytes || strings.ContainsAny(identifier, "\r\n") {
+		writeError(w, apiErr(http.StatusBadRequest, "invalid_input", "username or email is too long"))
+		return
+	}
+	// Check the shared client bucket first. Once an address is blocked, do not
+	// allocate per-identifier buckets for the remaining spray attempts.
+	ipKey := "ip\x00" + s.clientRateAddress(r)
+	if retry, allowed := s.loginAllowed(ipKey); !allowed {
+		writeLoginRateLimit(w, retry)
+		return
+	}
+	rateKeys := []string{
+		ipKey,
+		s.loginAccountRateKey(identifier),
+		s.loginRateKey(r, identifier),
+	}
+	for _, rateKey := range rateKeys[1:] {
+		if retry, allowed := s.loginAllowed(rateKey); !allowed {
+			writeLoginRateLimit(w, retry)
+			return
 		}
-		if seconds < 1 {
-			seconds = 1
-		}
-		w.Header().Set("Retry-After", strconv.Itoa(seconds))
-		writeError(w, apiErr(429, "login_rate_limited", "too many failed sign-in attempts; try again later"))
+	}
+	select {
+	case s.passwordSlots <- struct{}{}:
+		defer func() { <-s.passwordSlots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeError(w, apiErr(http.StatusTooManyRequests, "login_busy", "sign-in service is busy; try again shortly"))
 		return
 	}
 	user := s.store.authenticate(identifier, input.Password)
 	if user == nil {
-		s.loginFailure(rateKey)
+		for _, rateKey := range rateKeys {
+			s.loginFailure(rateKey)
+		}
 		writeError(w, apiErr(401, "invalid_credentials", "username or password is incorrect"))
 		return
 	}
-	s.loginSuccess(rateKey)
+	for _, rateKey := range rateKeys {
+		s.loginSuccess(rateKey)
+	}
 	token := randomID(32)
 	s.sessionsMu.Lock()
 	now := time.Now()
@@ -2965,7 +3260,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sessions[token] = session{UserID: user.ID, Expires: time.Now().Add(sessionTTL)}
 	s.sessionsMu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: int(sessionTTL.Seconds()), Expires: time.Now().Add(sessionTTL)})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, Secure: s.cookieSecure || r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: int(sessionTTL.Seconds()), Expires: time.Now().Add(sessionTTL)})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": s.store.publicUser(user)})
 }
 
@@ -2975,7 +3270,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		delete(s.sessions, cookie.Value)
 		s.sessionsMu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, Secure: s.cookieSecure || r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -3059,18 +3354,24 @@ func (s *Server) changeEnrollment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listGrades(w http.ResponseWriter, r *http.Request) {
 	user := s.currentUser(r)
 	target := queryStudent(r, user)
-	if user.Role == "admin" && hasStudentQuery(r) {
-		target = s.store.studentRecordID(target)
-		if target == "" {
-			writeError(w, apiErr(http.StatusNotFound, "student_not_found", "student not found"))
-			return
+	includeUnpublished := user.Role == "admin"
+	if user.Role == "admin" {
+		if hasStudentQuery(r) {
+			target = s.store.studentRecordID(target)
+			if target == "" {
+				writeError(w, apiErr(http.StatusNotFound, "student_not_found", "student not found"))
+				return
+			}
+		} else {
+			// An administrator without a student filter is asking for the
+			// registrar-wide view, not grades belonging to the admin account.
+			target = ""
 		}
-	}
-	if user.Role != "admin" && target != user.ID {
+	} else if target != user.ID {
 		writeError(w, apiErr(403, "forbidden", "students may only view their own grades"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "grades": s.store.gradesFor(target, user.Role == "admin" && !hasStudentQuery(r))})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "grades": s.store.gradesFor(target, includeUnpublished)})
 }
 
 func (s *Server) listSchedule(w http.ResponseWriter, r *http.Request) {
@@ -3115,6 +3416,36 @@ func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="cgu-course-catalog.csv"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
+}
+
+func (s *Server) downloadTranscript(w http.ResponseWriter, r *http.Request) {
+	user := s.currentUser(r)
+	if user == nil {
+		writeError(w, apiErr(http.StatusUnauthorized, "authentication_required", "please log in first"))
+		return
+	}
+	target := user.ID
+	if user.Role == "admin" {
+		ref := strings.TrimSpace(first(r.URL.Query().Get("student_id"), r.URL.Query().Get("user_id")))
+		if ref == "" {
+			writeError(w, apiErr(http.StatusBadRequest, "student_required", "student_id is required for an administrator transcript"))
+			return
+		}
+		target = s.store.studentRecordID(ref)
+		if target == "" {
+			writeError(w, apiErr(http.StatusNotFound, "student_not_found", "student not found"))
+			return
+		}
+	}
+	content, err := s.store.transcriptCSV(target, r.URL.Query().Get("lang"))
+	if err != nil {
+		writeError(w, apiErr(http.StatusNotFound, "transcript_not_found", "transcript is not available"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="cgu-transcript.csv"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content)
 }
@@ -3202,7 +3533,7 @@ func (s *Server) listAdminGrades(w http.ResponseWriter, r *http.Request) {
 			writeError(w, apiErr(http.StatusNotFound, "student_not_found", "student not found"))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "grades": s.store.gradesFor(studentID, false)})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "grades": s.store.gradesFor(studentID, true)})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "grades": s.store.gradesFor("", true)})
@@ -3698,6 +4029,22 @@ func (s *Server) loginRateKey(r *http.Request, identifier string) string {
 	return s.clientRateAddress(r) + "\x00" + strings.ToLower(strings.TrimSpace(identifier))
 }
 
+func (s *Server) loginAccountRateKey(identifier string) string {
+	return "account\x00" + strings.ToLower(strings.TrimSpace(identifier))
+}
+
+func writeLoginRateLimit(w http.ResponseWriter, retry time.Duration) {
+	seconds := int(retry / time.Second)
+	if retry%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	writeError(w, apiErr(http.StatusTooManyRequests, "login_rate_limited", "too many failed sign-in attempts; try again later"))
+}
+
 func (s *Server) loginAllowed(key string) (time.Duration, bool) {
 	now := time.Now()
 	s.loginMu.Lock()
@@ -3733,6 +4080,20 @@ func (s *Server) loginFailure(key string) {
 	defer s.loginMu.Unlock()
 	item := s.loginAttempts[key]
 	if item == nil || now.Sub(item.windowFrom) >= loginWindow {
+		if item == nil && len(s.loginAttempts) >= loginMaxKeys {
+			// Keep failure-path allocation bounded too; loginAllowed normally
+			// creates the key first, but direct callers/tests should be safe.
+			var oldestKey string
+			var oldest time.Time
+			for candidate, attempt := range s.loginAttempts {
+				if oldestKey == "" || attempt.windowFrom.Before(oldest) {
+					oldestKey, oldest = candidate, attempt.windowFrom
+				}
+			}
+			if oldestKey != "" {
+				delete(s.loginAttempts, oldestKey)
+			}
+		}
 		item = &loginAttempt{windowFrom: now}
 		s.loginAttempts[key] = item
 	}
@@ -3870,6 +4231,10 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 	switch relative {
 	case "":
 		relative = "index.html"
+	case "about", "programs", "admissions", "campus-life", "news", "contact":
+		// Public information architecture aliases keep university sections
+		// addressable and share the managed homepage source of truth.
+		relative = "index.html"
 	case "login":
 		relative = "login.html"
 	case "portal":
@@ -3878,10 +4243,21 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 		relative = "admin.html"
 	case "calendar":
 		relative = "calendar.html"
+	case "catalog":
+		relative = "catalog.html"
+	}
+	if sensitiveStaticPath(relative) {
+		http.NotFound(w, r)
+		return
 	}
 	root, err := filepath.Abs(s.staticDir)
 	if err != nil {
 		http.Error(w, "static files unavailable", 500)
+		return
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		http.NotFound(w, r)
 		return
 	}
 	candidate := filepath.Join(root, filepath.FromSlash(relative))
@@ -3894,13 +4270,47 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	resolvedCandidate, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	resolvedRel, err := filepath.Rel(resolvedRoot, resolvedCandidate)
+	if err != nil || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(os.PathSeparator)) {
+		http.NotFound(w, r)
+		return
+	}
 	switch strings.ToLower(filepath.Ext(candidate)) {
 	case ".html", ".js", ".css":
 		// Revalidate executable UI assets so a deployment cannot leave new HTML
 		// paired with an older cached script.
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	}
-	http.ServeFile(w, r, candidate)
+	http.ServeFile(w, r, resolvedCandidate)
+}
+
+// sensitiveStaticPath prevents an accidental CGU_STATIC_DIR pointing at the
+// repository or deployment directory from turning secrets and source files
+// into public downloads. The normal web directory contains only allow-listed
+// browser assets and never needs these names or extensions.
+func sensitiveStaticPath(relative string) bool {
+	clean := path.Clean("/" + strings.TrimPrefix(relative, "/"))
+	for _, segment := range strings.Split(strings.TrimPrefix(clean, "/"), "/") {
+		if segment == "" || strings.HasPrefix(segment, ".") {
+			return true
+		}
+	}
+	base := strings.ToLower(filepath.Base(clean))
+	ext := strings.ToLower(filepath.Ext(base))
+	if base == "config.json" || base == "config.yaml" || base == "config.yml" || base == "config.toml" || base == ".env" || base == "go.mod" || base == "go.sum" {
+		return true
+	}
+	switch ext {
+	case ".env", ".pem", ".key", ".crt", ".cer", ".p12", ".pfx", ".sql", ".db", ".sqlite", ".sqlite3", ".go", ".sum", ".mod", ".json", ".yaml", ".yml", ".toml", ".ps1", ".sh", ".bat", ".exe", ".dll":
+		return true
+	default:
+		return false
+	}
 }
 
 func queryStudent(r *http.Request, user *User) string {
@@ -3977,11 +4387,22 @@ func randomID(bytes int) string {
 }
 
 func hashPassword(password string) string {
+	hash, err := hashPasswordChecked(password)
+	if err != nil {
+		return ""
+	}
+	return hash
+}
+
+func hashPasswordChecked(password string) (string, error) {
+	if len([]byte(password)) > maxPasswordBytes {
+		return "", errors.New("password exceeds bcrypt's 72-byte limit")
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
-	return "bcrypt$" + string(hash)
+	return "bcrypt$" + string(hash), nil
 }
 
 func verifyPassword(password, encoded string) bool {
@@ -4040,18 +4461,18 @@ func pbkdf2SHA256(password, salt []byte, iterations, keyLength int) []byte {
 
 func (s *Store) seed() {
 	s.courses = append(s.courses,
-		&Course{ID: "cgu-elements-101", Code: "ELM101", NameZh: "元素力与世界观", NameEn: "Elements & Worldview", Department: "元素科学学院", Teacher: "丽莎", Credits: 3, Description: "从七元素的基本性质出发，建立理解提瓦特世界的第一套方法。", Capacity: 60, Type: "required", Term: "2026-秋"},
-		&Course{ID: "cgu-nature-202", Code: "NAT202", NameZh: "提瓦特自然地理", NameEn: "Teyvat Physical Geography", Department: "地脉与自然学院", Teacher: "钟离", Credits: 4, Description: "沿着地脉、山海与遗迹，练习用田野调查读懂一片土地。", Capacity: 45, Type: "required", Term: "2026-秋"},
-		&Course{ID: "cgu-mondstadt-210", Code: "MUS210", NameZh: "风之诗与文化记忆", NameEn: "Songs of Wind & Cultural Memory", Department: "人文与艺术学院", Teacher: "温迪", Credits: 3, Description: "以民谣、诗歌和城市记忆为线索，研究文化如何被传唱。", Capacity: 50, Type: "elective", Term: "2026-秋"},
-		&Course{ID: "cgu-adventure-301", Code: "ADV301", NameZh: "冒险实践与团队协作", NameEn: "Adventure Practice & Teamwork", Department: "冒险实践学院", Teacher: "凯瑟琳", Credits: 2, Description: "把风险评估、路线规划与可靠的伙伴关系带进真实任务。", Capacity: 35, Type: "elective", Term: "2026-秋"},
-		&Course{ID: "cgu-fontaine-310", Code: "FON310", NameZh: "审判与机械文明", NameEn: "Judgment & Mechanical Civilization", Department: "枫丹法政与工程学院", Teacher: "那维莱特", Credits: 4, Description: "从水之国的法庭与工坊，研究规则、能源与机械创造。", Capacity: 40, Type: "required", Term: "2026-秋"},
-		&Course{ID: "cgu-natlan-220", Code: "NAT220", NameZh: "火与竞技生态", NameEn: "Fire & Competitive Ecology", Department: "纳塔田野与竞技学院", Teacher: "教务联合授课", Credits: 3, Description: "在部族、仪式与竞技场之间，完成一场尊重当地知识的田野研究。", Capacity: 36, Type: "elective", Term: "2026-秋"},
-		&Course{ID: "cgu-snezhnaya-401", Code: "SNE401", NameZh: "至冬研究与极地治理", NameEn: "Snezhnaya Studies & Polar Governance", Department: "至冬与极地研究学院", Teacher: "教务联合授课", Credits: 4, Description: "以 7.0「无神怜爱的雪国」为新起点，研究冰原社会、风险与远行伦理。", Capacity: 32, Type: "elective", Term: "2026-秋"},
+		&Course{ID: "cgu-elements-101", Code: "ELM101", NameZh: "元素力与世界观", NameEn: "Elements & Worldview", Department: "元素科学学院", DepartmentEn: "School of Elemental Sciences", Teacher: "丽莎", TeacherEn: "Lisa", Credits: 3, Description: "从七元素的基本性质出发，建立理解提瓦特世界的第一套方法。", DescriptionEn: "Study the fundamental properties of the seven elements and build a framework for understanding Teyvat.", Capacity: 60, Type: "required", Term: "2026-秋", TermEn: "Autumn 2026"},
+		&Course{ID: "cgu-nature-202", Code: "NAT202", NameZh: "提瓦特自然地理", NameEn: "Teyvat Physical Geography", Department: "地脉与自然学院", DepartmentEn: "School of Ley Lines and Nature", Teacher: "钟离", TeacherEn: "Zhongli", Credits: 4, Description: "沿着地脉、山海与遗迹，练习用田野调查读懂一片土地。", DescriptionEn: "Read a landscape through fieldwork across ley lines, mountains, seas, and ruins.", Capacity: 45, Type: "required", Term: "2026-秋", TermEn: "Autumn 2026"},
+		&Course{ID: "cgu-mondstadt-210", Code: "MUS210", NameZh: "风之诗与文化记忆", NameEn: "Songs of Wind & Cultural Memory", Department: "人文与艺术学院", DepartmentEn: "School of Humanities and Arts", Teacher: "温迪", TeacherEn: "Venti", Credits: 3, Description: "以民谣、诗歌和城市记忆为线索，研究文化如何被传唱。", DescriptionEn: "Trace how culture travels through folk songs, poetry, and the memories of a city.", Capacity: 50, Type: "elective", Term: "2026-秋", TermEn: "Autumn 2026"},
+		&Course{ID: "cgu-adventure-301", Code: "ADV301", NameZh: "冒险实践与团队协作", NameEn: "Adventure Practice & Teamwork", Department: "冒险实践学院", DepartmentEn: "School of Adventure Practice", Teacher: "凯瑟琳", TeacherEn: "Katheryne", Credits: 2, Description: "把风险评估、路线规划与可靠的伙伴关系带进真实任务。", DescriptionEn: "Apply risk assessment, route planning, and trusted partnerships to real missions.", Capacity: 35, Type: "elective", Term: "2026-秋", TermEn: "Autumn 2026"},
+		&Course{ID: "cgu-fontaine-310", Code: "FON310", NameZh: "审判与机械文明", NameEn: "Judgment & Mechanical Civilization", Department: "枫丹法政与工程学院", DepartmentEn: "School of Fontaine Law and Engineering", Teacher: "那维莱特", TeacherEn: "Neuvillette", Credits: 4, Description: "从水之国的法庭与工坊，研究规则、能源与机械创造。", DescriptionEn: "Examine rules, energy, and mechanical invention through Fontaine's courts and workshops.", Capacity: 40, Type: "required", Term: "2026-秋", TermEn: "Autumn 2026"},
+		&Course{ID: "cgu-natlan-220", Code: "NAT220", NameZh: "火与竞技生态", NameEn: "Fire & Competitive Ecology", Department: "纳塔田野与竞技学院", DepartmentEn: "School of Natlan Fieldwork and Competition", Teacher: "教务联合授课", TeacherEn: "Registrar Faculty Team", Credits: 3, Description: "在部族、仪式与竞技场之间，完成一场尊重当地知识的田野研究。", DescriptionEn: "Conduct a field study that respects local knowledge across tribes, rituals, and arenas.", Capacity: 36, Type: "elective", Term: "2026-秋", TermEn: "Autumn 2026"},
+		&Course{ID: "cgu-snezhnaya-401", Code: "SNE401", NameZh: "至冬研究与极地治理", NameEn: "Snezhnaya Studies & Polar Governance", Department: "至冬与极地研究学院", DepartmentEn: "School of Snezhnaya and Polar Studies", Teacher: "教务联合授课", TeacherEn: "Registrar Faculty Team", Credits: 4, Description: "以 7.0「无神怜爱的雪国」为新起点，研究冰原社会、风险与远行伦理。", DescriptionEn: "Study polar societies, risk, and travel ethics from Version 7.0's new Snezhnaya setting.", Capacity: 32, Type: "elective", Term: "2026-秋", TermEn: "Autumn 2026"},
 	)
 	s.announcements = append(s.announcements,
 		&Announcement{ID: "announcement-welcome", TitleZh: "2026 秋季学期报到安排", TitleEn: "Autumn 2026 arrival schedule", ContentZh: "风之庭院将于 9 月 1 日开放报到，旅行者请携带录取确认函。", ContentEn: "Windrise Court opens on 1 September. Bring your admission confirmation.", Type: "ADMISSIONS", Audience: "all", PublishedAt: "2026-08-20T09:00:00Z", Published: true, Author: "admin"},
 		&Announcement{ID: "announcement-enrollment", TitleZh: "选课周提醒", TitleEn: "Course selection week reminder", ContentZh: "学生门户将在 8 月 26 日 09:00 开放选课，请提前确认课表。", ContentEn: "Course selection opens at 09:00 on 26 August. Review your schedule first.", Type: "ACADEMICS", Audience: "student", PublishedAt: "2026-08-22T09:00:00Z", Published: true, Author: "admin"},
-		&Announcement{ID: "announcement-snezhnaya-70", TitleZh: "7.0「无神怜爱的雪国」：至冬研究方向开放", TitleEn: "Version 7.0 “Everwinter Without Mercy”: Snezhnaya studies open", ContentZh: "根据原神官方 7.0 版本资讯，至冬成为新的旅途舞台。CGU 新增至冬研究与极地治理课程，官网同步提供官方新闻入口。", ContentEn: "Following the official Version 7.0 update, Snezhnaya is now the next stage of the journey. CGU adds a Snezhnaya studies track and links to the official news source.", Type: "WORLD_UPDATE", Audience: "all", PublishedAt: "2026-08-24T08:00:00+08:00", Published: true, Author: "admin"},
+		&Announcement{ID: "announcement-snezhnaya-70", TitleZh: "至冬官方动态：凯旋与冰中余烬", TitleEn: "Snezhnaya official updates: “Triumphant Return” and “Embers Beneath the Ice”", ContentZh: "原神官方新闻于 2026 年 8 月 23 日发布「凯旋」与「冰中余烬」等至冬内容。CGU 延续 7.0 至冬研究与极地治理方向，并提供官方新闻入口。", ContentEn: "On 23 August 2026, the official Genshin news page published Snezhnaya stories including “Triumphant Return” and “Embers Beneath the Ice”. CGU continues its Version 7.0 Snezhnaya studies track and links to the official source.", Type: "WORLD_UPDATE", Audience: "all", PublishedAt: "2026-08-23T08:00:00+08:00", Published: true, Author: "admin"},
 	)
 }
 
@@ -4062,6 +4483,9 @@ func main() {
 	}
 	if len([]byte(cfg.AdminPassword)) < 12 {
 		log.Fatal("administrator password must contain at least 12 characters")
+	}
+	if len([]byte(cfg.AdminPassword)) > maxPasswordBytes {
+		log.Fatal("administrator password must not exceed 72 bytes")
 	}
 	addr := cfg.Server.Address
 	if !strings.Contains(addr, ":") {

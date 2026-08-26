@@ -560,7 +560,7 @@ func TestStaticRoutes(t *testing.T) {
 	server := httptest.NewServer(NewServer(NewStoreWithAdmin(testAdminUsername, testAdminPassword), "web"))
 	defer server.Close()
 
-	for _, route := range []string{"/", "/login", "/login/", "/portal", "/portal/", "/admin", "/admin/", "/calendar", "/calendar/", "/login.html", "/portal.html", "/admin.html", "/calendar.html"} {
+	for _, route := range []string{"/", "/login", "/login/", "/portal", "/portal/", "/admin", "/admin/", "/calendar", "/calendar/", "/catalog", "/catalog/", "/login.html", "/portal.html", "/admin.html", "/calendar.html", "/catalog.html"} {
 		response, err := http.Get(server.URL + route)
 		if err != nil {
 			t.Fatal(err)

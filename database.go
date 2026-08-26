@@ -32,12 +32,16 @@ CREATE TABLE IF NOT EXISTS cgu_courses (
   name_zh VARCHAR(255) NOT NULL,
   name_en VARCHAR(255) NOT NULL,
   department VARCHAR(255) NOT NULL,
+  department_en VARCHAR(255) NOT NULL DEFAULT '',
   teacher VARCHAR(255) NOT NULL,
+  teacher_en VARCHAR(255) NOT NULL DEFAULT '',
   credits DECIMAL(8,2) NOT NULL DEFAULT 0,
   description TEXT NOT NULL,
+  description_en TEXT NOT NULL,
   capacity INT NOT NULL DEFAULT 1,
   course_type VARCHAR(32) NOT NULL DEFAULT 'elective',
   term_name VARCHAR(64) NOT NULL,
+  term_name_en VARCHAR(64) NOT NULL DEFAULT '',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS cgu_enrollments (
@@ -198,6 +202,61 @@ func migrateDatabase(ctx context.Context, db *sql.DB) error {
 	}
 	if err := ensureUserDisabledColumn(ctx, db); err != nil {
 		return fmt.Errorf("database users migration: %w", err)
+	}
+	if err := ensureCourseBilingualColumns(ctx, db); err != nil {
+		return fmt.Errorf("database courses migration: %w", err)
+	}
+	return nil
+}
+
+// ensureCourseBilingualColumns upgrades installations created before course
+// metadata became fully bilingual. Existing rows keep their Chinese values as
+// a safe fallback until an administrator supplies an English translation.
+func ensureCourseBilingualColumns(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name string
+		def  string
+	}{
+		{name: "department_en", def: "VARCHAR(255) NOT NULL DEFAULT ''"},
+		{name: "teacher_en", def: "VARCHAR(255) NOT NULL DEFAULT ''"},
+		{name: "description_en", def: "TEXT NOT NULL"},
+		{name: "term_name_en", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+	}
+	added := make(map[string]bool, len(columns))
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`, "cgu_courses", column.name).Scan(&count); err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `ALTER TABLE cgu_courses ADD COLUMN `+column.name+` `+column.def); err != nil {
+			if !isDuplicateSchemaObject(err) {
+				return fmt.Errorf("add %s: %w", column.name, err)
+			}
+			continue
+		}
+		added[column.name] = true
+	}
+	// Backfill only columns added by this migration. On later starts an empty
+	// value may be an intentional administrator clear and must remain empty.
+	backfills := []struct {
+		column string
+		source string
+	}{
+		{column: "department_en", source: "department"},
+		{column: "teacher_en", source: "teacher"},
+		{column: "description_en", source: "description"},
+		{column: "term_name_en", source: "term_name"},
+	}
+	for _, backfill := range backfills {
+		if !added[backfill.column] {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE cgu_courses SET `+backfill.column+` = `+backfill.source+` WHERE `+backfill.column+` = ''`); err != nil {
+			return fmt.Errorf("backfill %s: %w", backfill.column, err)
+		}
 	}
 	return nil
 }
@@ -385,7 +444,7 @@ func (s *Store) ensureDatabaseSeedLocked(ctx context.Context) error {
 
 func (s *Store) seedCoursesLocked(ctx context.Context) error {
 	for _, item := range s.courses {
-		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_courses (id, code, name_zh, name_en, department, teacher, credits, description, capacity, course_type, term_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.Code, item.NameZh, item.NameEn, item.Department, item.Teacher, item.Credits, item.Description, item.Capacity, item.Type, item.Term); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_courses (id, code, name_zh, name_en, department, department_en, teacher, teacher_en, credits, description, description_en, capacity, course_type, term_name, term_name_en) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.Code, item.NameZh, item.NameEn, item.Department, item.DepartmentEn, item.Teacher, item.TeacherEn, item.Credits, item.Description, item.DescriptionEn, item.Capacity, item.Type, item.Term, item.TermEn); err != nil {
 			return err
 		}
 	}
@@ -398,7 +457,12 @@ func (s *Store) seedAnnouncementsLocked(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	// Refresh only the previous shipped copy. An administrator's edited row
+	// must remain authoritative across upgrades.
+	_, err := s.db.ExecContext(ctx, `UPDATE cgu_announcements SET title_zh = ?, title_en = ?, content_zh = ?, content_en = ?, type_name = ?, audience_name = ?, course_id = ?, published_at = ?, published_flag = ?, author_name = ? WHERE id = ? AND title_zh = ? AND title_en = ? AND content_zh = ? AND content_en = ?`,
+		"至冬官方动态：凯旋与冰中余烬", "Snezhnaya official updates: “Triumphant Return” and “Embers Beneath the Ice”", "原神官方新闻于 2026 年 8 月 23 日发布「凯旋」与「冰中余烬」等至冬内容。CGU 延续 7.0 至冬研究与极地治理方向，并提供官方新闻入口。", "On 23 August 2026, the official Genshin news page published Snezhnaya stories including “Triumphant Return” and “Embers Beneath the Ice”. CGU continues its Version 7.0 Snezhnaya studies track and links to the official source.", "WORLD_UPDATE", "all", "", "2026-08-23T08:00:00+08:00", true, "admin", "announcement-snezhnaya-70",
+		"7.0「无神怜爱的雪国」：至冬研究方向开放", "Version 7.0 “Everwinter Without Mercy”: Snezhnaya studies open", "根据原神官方 7.0 版本资讯，至冬成为新的旅途舞台。CGU 新增至冬研究与极地治理课程，官网同步提供官方新闻入口。", "Following the official Version 7.0 update, Snezhnaya is now the next stage of the journey. CGU adds a Snezhnaya studies track and links to the official news source.")
+	return err
 }
 
 func (s *Store) seedSiteContentLocked(ctx context.Context) error {
@@ -407,6 +471,16 @@ func (s *Store) seedSiteContentLocked(ctx context.Context) error {
 			continue
 		}
 		if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO cgu_site_content (content_key, zh_text, en_text) VALUES (?, ?, ?)`, item.Key, item.Zh, item.En); err != nil {
+			return err
+		}
+	}
+	// Date keys were part of the previous built-in copy. Update only that exact
+	// copy so a deliberate administrator override is never silently replaced.
+	for _, item := range []*SiteContent{s.siteContent["home.featureDate"], s.siteContent["home.newsSnezhnayaDate"]} {
+		if item == nil {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE cgu_site_content SET zh_text = ?, en_text = ? WHERE content_key = ? AND zh_text = ? AND en_text = ?`, item.Zh, item.En, item.Key, "08.12", "08.12"); err != nil {
 			return err
 		}
 	}
@@ -486,7 +560,7 @@ func loadUsers(ctx context.Context, db *sql.DB) (map[string]*User, error) {
 }
 
 func loadCourses(ctx context.Context, db *sql.DB) ([]*Course, error) {
-	rows, err := db.QueryContext(ctx, "SELECT id, code, name_zh, name_en, department, teacher, credits, description, capacity, course_type, term_name FROM cgu_courses ORDER BY id")
+	rows, err := db.QueryContext(ctx, "SELECT id, code, name_zh, name_en, department, department_en, teacher, teacher_en, credits, description, description_en, capacity, course_type, term_name, term_name_en FROM cgu_courses ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -494,7 +568,7 @@ func loadCourses(ctx context.Context, db *sql.DB) ([]*Course, error) {
 	result := make([]*Course, 0)
 	for rows.Next() {
 		item := &Course{}
-		if err := rows.Scan(&item.ID, &item.Code, &item.NameZh, &item.NameEn, &item.Department, &item.Teacher, &item.Credits, &item.Description, &item.Capacity, &item.Type, &item.Term); err != nil {
+		if err := rows.Scan(&item.ID, &item.Code, &item.NameZh, &item.NameEn, &item.Department, &item.DepartmentEn, &item.Teacher, &item.TeacherEn, &item.Credits, &item.Description, &item.DescriptionEn, &item.Capacity, &item.Type, &item.Term, &item.TermEn); err != nil {
 			return nil, err
 		}
 		result = append(result, item)
@@ -769,7 +843,7 @@ func (s *Store) persistCourseLocked(item *Course) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_courses (id, code, name_zh, name_en, department, teacher, credits, description, capacity, course_type, term_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE code=VALUES(code), name_zh=VALUES(name_zh), name_en=VALUES(name_en), department=VALUES(department), teacher=VALUES(teacher), credits=VALUES(credits), description=VALUES(description), capacity=VALUES(capacity), course_type=VALUES(course_type), term_name=VALUES(term_name)`, item.ID, item.Code, item.NameZh, item.NameEn, item.Department, item.Teacher, item.Credits, item.Description, item.Capacity, item.Type, item.Term)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_courses (id, code, name_zh, name_en, department, department_en, teacher, teacher_en, credits, description, description_en, capacity, course_type, term_name, term_name_en) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE code=VALUES(code), name_zh=VALUES(name_zh), name_en=VALUES(name_en), department=VALUES(department), department_en=VALUES(department_en), teacher=VALUES(teacher), teacher_en=VALUES(teacher_en), credits=VALUES(credits), description=VALUES(description), description_en=VALUES(description_en), capacity=VALUES(capacity), course_type=VALUES(course_type), term_name=VALUES(term_name), term_name_en=VALUES(term_name_en)`, item.ID, item.Code, item.NameZh, item.NameEn, item.Department, item.DepartmentEn, item.Teacher, item.TeacherEn, item.Credits, item.Description, item.DescriptionEn, item.Capacity, item.Type, item.Term, item.TermEn)
 	return err
 }
 

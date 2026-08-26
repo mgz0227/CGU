@@ -252,7 +252,7 @@ button { cursor: pointer; }
   .header-actions { margin-left: auto; }
   .icon-button { display: block; }
   .mobile-menu { display: grid; max-height: 0; overflow: hidden; padding: 0 22px; background: var(--paper); color: var(--ink); transition: max-height .25s ease, padding .25s ease; }
-  .mobile-menu.is-open { max-height: 320px; padding-top: 12px; padding-bottom: 16px; border-top: 1px solid var(--line); }
+  .mobile-menu.is-open { max-height: min(80vh, 560px); overflow-y: auto; padding-top: 12px; padding-bottom: 16px; border-top: 1px solid var(--line); }
   .mobile-menu a { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
   .mobile-menu a:last-child { border-bottom: 0; }
   .hero { min-height: 720px; }

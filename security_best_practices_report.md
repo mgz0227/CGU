@@ -1,6 +1,7 @@
 # CGU security audit
 
 Audit date: 2026-08-25
+Follow-up: 2026-08-26 (v1.5.5 hardening)
 
 Scope: Go HTTP service, cookie authentication, MySQL adapter, and browser
 client code in `web/`. The audit follows the repository's Go and web
@@ -16,6 +17,13 @@ SQL, and no persisted bearer token in the browser. `go test ./...`, `go vet
 
 This is a hardening audit, not a guarantee that an internet-facing deployment
 is safe without TLS, a reverse proxy, monitoring, and secret rotation.
+
+The follow-up added a global bcrypt verification gate for login CPU abuse,
+forces `Secure` on cookies issued over TLS, blocks sensitive filenames and
+extensions from accidental static-directory exposure, and restricts portal
+hash navigation to known section IDs. A Windows local run verified tests,
+vet, build, and browser flows; the repository CI race and vulnerability gates
+remain authoritative for release.
 
 ## Findings and dispositions
 
@@ -47,9 +55,11 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
 ### GO-AUTH-002: login abuse and session exhaustion (High, fixed)
 
 - Location: login rate limiter and session creation in `main.go`.
-- Evidence: failures are limited to eight attempts per five-minute window per
-  client/identifier, followed by a fifteen-minute block; both limiter keys and
-  sessions are bounded and expired entries are pruned.
+- Evidence: failures are limited to eight attempts per five-minute window on
+  independent client-IP, normalized-account, and client/account-combination
+  buckets, followed by a fifteen-minute block; login identifiers are capped at
+  254 bytes, and limiter keys plus sessions are bounded and expired entries are
+  pruned.
 - Impact: reduces credential stuffing and memory exhaustion against the admin
   endpoint.
 - Fix: `429` plus `Retry-After` is returned while blocked; successful login
@@ -215,3 +225,29 @@ is safe without TLS, a reverse proxy, monitoring, and secret rotation.
    vulnerabilities; the current `golang.org/x/crypto` module reports only its
    unmaintained, unused `openpgp` package. A missing `govulncheck` binary is a
    failed gate, not evidence that dependencies are safe.
+
+## Follow-up residual risks
+
+### GO-CONFIG-002: deployment file ownership (Medium, operational)
+
+- Location: `config.go`, `resolveDeploymentFile`.
+- Evidence: when no explicit file is supplied, the service retains the
+  conventional current-working-directory lookup for `config.json` and `.env`.
+- Impact: a service account whose working directory is writable by another
+  principal could be tricked into loading an attacker-controlled administrator,
+  SMTP, or static-directory configuration.
+- Required mitigation: production units should set absolute
+  `CGU_CONFIG_FILE` / `CGU_ENV_FILE` paths in a protected directory, restrict
+  ownership and permissions, and set `CGU_STATIC_DIR` to the dedicated `web/`
+  directory. The static handler independently rejects secret-like files as a
+  defense in depth.
+
+### GO-DEPLOY-003: dependency scan execution (Medium, CI gate)
+
+- Location: local developer environment and `.github/workflows/security.yml`.
+- Evidence: `govulncheck` is not installed in the Windows workspace; the CI
+  workflow runs `go run golang.org/x/vuln/cmd/govulncheck@latest ./...`.
+- Impact: local verification cannot stand in for the repository's dependency
+  vulnerability gate.
+- Required mitigation: require the GitHub Actions job to pass before release;
+  do not interpret a skipped local command as a clean vulnerability result.

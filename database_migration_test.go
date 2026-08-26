@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -107,6 +108,75 @@ func TestEnsureUserDisabledColumnToleratesConcurrentDDL(t *testing.T) {
 
 	if err := ensureUserDisabledColumn(context.Background(), db); err != nil {
 		t.Fatalf("concurrent users migration should be idempotent: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureCourseBilingualColumnsToleratesConcurrentDDL(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	columnQuery := regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`)
+	columns := []struct {
+		name string
+		def  string
+	}{
+		{name: "department_en", def: "VARCHAR(255) NOT NULL DEFAULT ''"},
+		{name: "teacher_en", def: "VARCHAR(255) NOT NULL DEFAULT ''"},
+		{name: "description_en", def: "TEXT NOT NULL"},
+		{name: "term_name_en", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		mock.ExpectQuery(columnQuery).
+			WithArgs("cgu_courses", column.name).
+			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+		mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE cgu_courses ADD COLUMN " + column.name + " " + column.def)).
+			WillReturnError(&mysql.MySQLError{Number: 1060, Message: "Duplicate column name"})
+	}
+	if err := ensureCourseBilingualColumns(context.Background(), db); err != nil {
+		t.Fatalf("concurrent course migration should be idempotent: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureCourseBilingualColumnsBackfillsOnlyWhenColumnsAreAdded(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	columnQuery := regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`)
+	columns := []struct {
+		name string
+		def  string
+	}{
+		{name: "department_en", def: "VARCHAR(255) NOT NULL DEFAULT ''"},
+		{name: "teacher_en", def: "VARCHAR(255) NOT NULL DEFAULT ''"},
+		{name: "description_en", def: "TEXT NOT NULL"},
+		{name: "term_name_en", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		mock.ExpectQuery(columnQuery).
+			WithArgs("cgu_courses", column.name).
+			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+		mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE cgu_courses ADD COLUMN " + column.name + " " + column.def)).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+	for _, field := range []string{"department_en = department", "teacher_en = teacher", "description_en = description", "term_name_en = term_name"} {
+		column := strings.TrimSpace(strings.Split(field, "=")[0])
+		mock.ExpectExec(regexp.QuoteMeta("UPDATE cgu_courses SET " + field + " WHERE " + column + " = ''")).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	if err := ensureCourseBilingualColumns(context.Background(), db); err != nil {
+		t.Fatalf("initial course migration failed: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

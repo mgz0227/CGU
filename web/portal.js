@@ -59,6 +59,13 @@
   const localizedError = (error, fallbackKey = 'common.error') => {
     if (error?.network) return I18N.t('common.networkError');
     if (Number(error?.status) >= 500 || error?.code === 'api_unavailable') return I18N.t('common.apiUnavailable');
+    const errorKey = {
+      course_in_use: 'admin.courseInUse',
+      schedule_overlap: 'admin.scheduleOverlap',
+      course_full: 'portal.courseFull',
+      student_exists: 'admin.studentExists'
+    }[error?.code];
+    if (errorKey) return I18N.t(errorKey);
     return I18N.t(fallbackKey);
   };
 
@@ -188,6 +195,10 @@
     const id = value.id ?? value.courseId ?? value.course_id ?? value.code;
     const nameZh = value.nameZh ?? value.name_zh ?? value.titleZh ?? value.title_zh ?? value.name ?? value.title ?? value.code ?? id;
     const nameEn = value.nameEn ?? value.name_en ?? value.titleEn ?? value.title_en ?? nameZh;
+    const department = value.department ?? value.school ?? value.college ?? '';
+    const teacher = value.teacher ?? value.instructor ?? value.teacherName ?? '';
+    const description = value.description ?? value.summary ?? '';
+    const term = value.term ?? value.semester ?? value.period ?? '';
     const enrolled = Boolean(value.enrolled ?? value.isEnrolled ?? (value.enrollmentStatus === 'enrolled'));
     return {
       ...value,
@@ -195,14 +206,19 @@
       code: value.code ?? value.courseCode ?? id,
       nameZh,
       nameEn,
-      teacher: value.teacher ?? value.instructor ?? value.teacherName ?? '',
+      department,
+      departmentEn: value.departmentEn ?? value.department_en ?? value.schoolEn ?? value.school_en ?? department,
+      teacher,
+      teacherEn: value.teacherEn ?? value.teacher_en ?? value.instructorEn ?? value.instructor_en ?? teacher,
       credits: numberValue(value.credits ?? value.credit, 0),
-      term: value.term ?? value.semester ?? value.period ?? '',
+      term,
+      termEn: value.termEn ?? value.term_en ?? value.termNameEn ?? value.term_name_en ?? term,
       type: String(value.type ?? value.courseType ?? 'elective').toLowerCase(),
       capacity: numberValue(value.capacity ?? value.maxCapacity, 0),
       enrolledCount: numberValue(value.enrolledCount ?? value.enrolled_count ?? value.enrollmentCount, 0),
       enrolled,
-      description: value.description ?? value.summary ?? ''
+      description,
+      descriptionEn: value.descriptionEn ?? value.description_en ?? value.summaryEn ?? value.summary_en ?? description
     };
   };
 
@@ -515,6 +531,7 @@
     .map((item) => item.courseId ?? item.course_id ?? item.courseCode ?? item.code));
   const courseIsEnrolled = (course) => Boolean(course.enrolled) || enrollmentIds().has(course.id) || enrollmentIds().has(course.code);
   const courseLabel = (course) => localeValue({ zh: course.nameZh ?? course.courseNameZh, en: course.nameEn ?? course.courseNameEn }, course.code ?? course.courseCode) || notAvailable();
+  const courseMetadataLabel = (course, field, fallback = '') => localeValue({ zh: course?.[field], en: course?.[`${field}En`] }, fallback);
   const courseSecondaryLabel = (course) => {
     const primary = courseLabel(course);
     const secondary = I18N.locale === 'zh' ? (course.nameEn ?? course.courseNameEn) : (course.nameZh ?? course.courseNameZh);
@@ -552,7 +569,7 @@
     Object.entries(notes).forEach(([key, value]) => document.querySelectorAll(`[data-metric-note="${key}"]`).forEach((node) => { node.textContent = value; }));
     document.querySelectorAll('[data-grade-summary]').forEach((node) => { node.textContent = `${passed.length}/${state.grades.length}`; });
     document.querySelectorAll('[data-course-count]').forEach((node) => { node.textContent = String(state.courses.length).padStart(2, '0'); });
-    document.querySelectorAll('[data-term-label]').forEach((node) => { node.textContent = state.courses[0]?.term || I18N.t('portal.termFallback'); });
+    document.querySelectorAll('[data-term-label]').forEach((node) => { node.textContent = courseMetadataLabel(state.courses[0], 'term', I18N.t('portal.termFallback')); });
   };
 
   const renderCourseFilters = () => {
@@ -560,7 +577,10 @@
     if (!select) return;
     const selected = select.value || 'all';
     const terms = [...new Set(state.courses.map((course) => course.term).filter(Boolean))];
-    select.innerHTML = `<option value="all">${escapeHTML(I18N.t('portal.allTerms'))}</option>${terms.map((term) => `<option value="${escapeHTML(term)}">${escapeHTML(term)}</option>`).join('')}`;
+    select.innerHTML = `<option value="all">${escapeHTML(I18N.t('portal.allTerms'))}</option>${terms.map((term) => {
+      const course = state.courses.find((item) => item.term === term);
+      return `<option value="${escapeHTML(term)}">${escapeHTML(courseMetadataLabel(course, 'term', term))}</option>`;
+    }).join('')}`;
     select.value = terms.includes(selected) ? selected : 'all';
   };
 
@@ -572,7 +592,7 @@
     const term = document.querySelector('[data-course-term]')?.value || 'all';
     const type = document.querySelector('[data-course-type]')?.value || 'all';
     const visible = state.courses.filter((course) => {
-      const haystack = `${course.code} ${course.nameZh} ${course.nameEn} ${course.teacher}`.toLowerCase();
+      const haystack = `${course.code} ${course.nameZh} ${course.nameEn} ${course.department} ${course.departmentEn} ${course.teacher} ${course.teacherEn} ${course.description} ${course.descriptionEn} ${course.term} ${course.termEn}`.toLowerCase();
       return (!query || haystack.includes(query)) && (term === 'all' || course.term === term) && (type === 'all' || course.type === type);
     });
     if (!visible.length) { list.innerHTML = `<tr><td colspan="7" class="empty-state">${escapeHTML(I18N.t('portal.noCourses'))}</td></tr>`; return; }
@@ -581,7 +601,11 @@
       const full = course.capacity > 0 && course.enrolledCount >= course.capacity && !enrolled;
       const status = enrolled ? `<span class="status-pill">${escapeHTML(I18N.t('portal.enrolledLabel'))}</span>` : full ? `<span class="status-pill is-full">${escapeHTML(I18N.t('portal.full'))}</span>` : `<span class="status-pill">${escapeHTML(course.type === 'required' ? I18N.t('portal.required') : I18N.t('portal.elective'))}</span>`;
       const action = enrolled ? `<button class="table-action is-danger" type="button" data-course-action="drop" data-course-id="${escapeHTML(course.id)}">${escapeHTML(I18N.t('portal.drop'))}</button>` : `<button class="table-action" type="button" data-course-action="enroll" data-course-id="${escapeHTML(course.id)}"${full ? ' disabled' : ''}>${escapeHTML(I18N.t('portal.enroll'))}</button>`;
-      return `<tr><td>${escapeHTML(course.code || notAvailable())}</td><td><span class="course-name">${escapeHTML(courseLabel(course))}</span><small class="course-name"><span>${escapeHTML(course.description || '')}</span></small></td><td>${escapeHTML(course.teacher || notAvailable())}</td><td>${escapeHTML(course.credits ?? notAvailable())}</td><td>${escapeHTML(course.term || notAvailable())}</td><td>${status}</td><td>${action}</td></tr>`;
+      const department = courseMetadataLabel(course, 'department', notAvailable());
+      const description = courseMetadataLabel(course, 'description', '');
+      const teacher = courseMetadataLabel(course, 'teacher', notAvailable());
+      const termLabel = courseMetadataLabel(course, 'term', notAvailable());
+      return `<tr><td>${escapeHTML(course.code || notAvailable())}</td><td><span class="course-name">${escapeHTML(courseLabel(course))}</span><small class="course-name">${escapeHTML(department)}</small><small class="course-name"><span>${escapeHTML(description)}</span></small></td><td>${escapeHTML(teacher)}</td><td>${escapeHTML(course.credits ?? notAvailable())}</td><td>${escapeHTML(termLabel)}</td><td>${status}</td><td>${action}</td></tr>`;
     }).join('');
   };
 
@@ -768,7 +792,12 @@
     document.querySelector('[data-close-dialog]')?.addEventListener('click', () => document.querySelector('[data-announcement-dialog]')?.close?.());
     document.querySelector('[data-announcement-dialog]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) event.currentTarget.close?.(); });
     document.querySelector('[data-refresh]')?.addEventListener('click', () => loadPortalData());
-    window.addEventListener('hashchange', () => { const section = document.querySelector(window.location.hash || '#overview'); section?.scrollIntoView({ behavior: 'smooth' }); });
+    const portalSections = new Set(['overview', 'courses', 'grades', 'schedule', 'announcements', 'mailbox', 'profile']);
+    window.addEventListener('hashchange', () => {
+      const sectionID = String(window.location.hash || '#overview').slice(1);
+      if (!portalSections.has(sectionID)) return;
+      document.getElementById(sectionID)?.scrollIntoView({ behavior: 'smooth' });
+    });
   };
 
   const loadPortalData = async () => {
@@ -829,9 +858,9 @@
     const id = values.id?.trim() || '';
     const nameZh = values.nameZh?.trim() || '';
     const nameEn = values.nameEn?.trim() || '';
-    const clearFields = id ? ['nameEn', 'department', 'teacher', 'description', 'term', 'type'].filter((field) => !String(values[field] || '').trim()) : [];
+    const clearFields = id ? ['nameEn', 'department', 'departmentEn', 'teacher', 'teacherEn', 'description', 'descriptionEn', 'term', 'termEn', 'type'].filter((field) => !String(values[field] || '').trim()) : [];
     return {
-      id: id || undefined, code: values.code?.trim(), name: nameZh || nameEn, nameZh, nameEn, department: values.department?.trim() || '', term: values.term?.trim() || '', teacher: values.teacher?.trim() || '', credits: numberValue(values.credits, 0), capacity: numberValue(values.capacity, 0), type: values.type?.trim() || '', description: values.description?.trim() || '', clearFields
+      id: id || undefined, code: values.code?.trim(), name: nameZh || nameEn, nameZh, nameEn, department: values.department?.trim() || '', departmentEn: values.departmentEn?.trim() || '', term: values.term?.trim() || '', termEn: values.termEn?.trim() || '', teacher: values.teacher?.trim() || '', teacherEn: values.teacherEn?.trim() || '', credits: numberValue(values.credits, 0), capacity: numberValue(values.capacity, 0), type: values.type?.trim() || '', description: values.description?.trim() || '', descriptionEn: values.descriptionEn?.trim() || '', clearFields
     };
   };
   const announcementPayload = (form) => {
@@ -911,7 +940,7 @@
     document.querySelectorAll('[data-admin-metric="students"]').forEach((node) => { node.textContent = stats.students ?? state.user?.studentCount ?? state.user?.stats?.students ?? notAvailable(); });
     document.querySelectorAll('[data-admin-metric="pending"]').forEach((node) => { node.textContent = stats.pending ?? state.adminAnnouncements.filter((item) => !item.published).length; });
     const courseList = document.querySelector('[data-admin-course-list]');
-    if (courseList) courseList.innerHTML = state.adminCourses.length ? state.adminCourses.map((course) => `<tr><td>${escapeHTML(course.code || notAvailable())}</td><td><span class="course-name">${escapeHTML(courseLabel(course) || notAvailable())}</span>${courseSecondaryLabel(course)}</td><td>${escapeHTML(course.department || notAvailable())}</td><td>${escapeHTML(course.teacher || notAvailable())}</td><td>${escapeHTML(course.credits ?? notAvailable())}</td><td>${escapeHTML(course.term || notAvailable())}</td><td>${escapeHTML(course.enrolledCount)}/${escapeHTML(course.capacity || notAvailable())}</td><td><button class="table-action" type="button" data-edit-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></td></tr>`).join('') : `<tr><td colspan="8" class="empty-state">${escapeHTML(I18N.t('admin.noCourses'))}</td></tr>`;
+    if (courseList) courseList.innerHTML = state.adminCourses.length ? state.adminCourses.map((course) => `<tr><td>${escapeHTML(course.code || notAvailable())}</td><td><span class="course-name">${escapeHTML(courseLabel(course) || notAvailable())}</span>${courseSecondaryLabel(course)}</td><td>${escapeHTML(courseMetadataLabel(course, 'department', notAvailable()))}</td><td>${escapeHTML(courseMetadataLabel(course, 'teacher', notAvailable()))}</td><td>${escapeHTML(course.credits ?? notAvailable())}</td><td>${escapeHTML(courseMetadataLabel(course, 'term', notAvailable()))}</td><td>${escapeHTML(course.enrolledCount)}/${escapeHTML(course.capacity || notAvailable())}</td><td><button class="table-action" type="button" data-edit-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-course="${escapeHTML(course.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></td></tr>`).join('') : `<tr><td colspan="8" class="empty-state">${escapeHTML(I18N.t('admin.noCourses'))}</td></tr>`;
     const announcementList = document.querySelector('[data-admin-announcement-list]');
     if (announcementList) announcementList.innerHTML = state.adminAnnouncements.length ? state.adminAnnouncements.map((item) => `<article class="admin-announcement-row"><div><span class="announcement-type">${escapeHTML(announcementType(item.type))}</span><h3>${escapeHTML(announcementTitle(item))}</h3><p>${escapeHTML(announcementContent(item))}</p></div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.publishedAt, true))}</div><div class="admin-actions"><span class="status-pill${item.published ? '' : ' is-full'}">${escapeHTML(item.published ? I18N.t('admin.publish') : I18N.t('admin.unpublish'))}</span><button class="table-action" type="button" data-edit-announcement="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action is-danger" type="button" data-delete-announcement="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.delete'))}</button></div></article>`).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noAnnouncements'))}</p>`;
     renderAdminAdmissions();
@@ -1039,7 +1068,7 @@
     document.querySelector('[data-cancel-course]')?.addEventListener('click', () => { form.reset(); form.elements.id.value = ''; showEditor(editor, false); });
     document.querySelector('[data-admin-course-list]')?.addEventListener('click', async (event) => {
       const edit = event.target.closest('[data-edit-course]'); const remove = event.target.closest('[data-delete-course]');
-      if (edit) { const item = state.adminCourses.find((course) => String(course.id) === String(edit.dataset.editCourse)); if (item) { fillForm(form, item, ['id', 'code', 'term', 'nameZh', 'nameEn', 'department', 'teacher', 'credits', 'capacity', 'type', 'description']); showEditor(editor, true); } }
+      if (edit) { const item = state.adminCourses.find((course) => String(course.id) === String(edit.dataset.editCourse)); if (item) { fillForm(form, item, ['id', 'code', 'term', 'termEn', 'nameZh', 'nameEn', 'department', 'departmentEn', 'teacher', 'teacherEn', 'credits', 'capacity', 'type', 'description', 'descriptionEn']); showEditor(editor, true); } }
       if (remove) {
         const item = state.adminCourses.find((course) => String(course.id) === String(remove.dataset.deleteCourse));
         if (!item || !window.confirm(I18N.t('admin.deleteConfirm'))) return;
@@ -1573,6 +1602,10 @@
     if (!await ensureSession('admin')) return;
     await loadAdminData();
     startAdminRefresh();
+    // A public admission can arrive while the registrar already has the
+    // dashboard open. Refresh on section navigation so opening Admissions or
+    // Notifications immediately shows the durable server state.
+    window.addEventListener('hashchange', () => window.setTimeout(() => loadAdminData(), 0));
     window.addEventListener('cgu:localechange', renderAdmin);
   };
 
