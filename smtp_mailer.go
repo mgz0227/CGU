@@ -17,6 +17,23 @@ type ExternalMailSender interface {
 	Send(context.Context, string, string, string) error
 }
 
+// SMTPConfig is loaded from the protected administrator settings store at
+// runtime; it is intentionally not part of AppConfig or deployment files.
+type SMTPConfig struct {
+	Enabled       bool
+	Host          string
+	Port          int
+	Username      string
+	Password      string
+	From          string
+	FromName      string
+	Auth          string
+	TLSMode       string
+	HELO          string
+	TimeoutSecond int
+	AllowInsecure bool
+}
+
 // SMTPDeliveryError preserves the important distinction between a rejected
 // SMTP transaction and an error that happened after the relay may have
 // accepted the DATA payload. Callers must treat the latter as unknown and
@@ -88,6 +105,12 @@ func validateSMTPConfig(cfg SMTPConfig) error {
 	if cfg.Host == "" || len([]rune(cfg.Host)) > 253 || strings.ContainsAny(cfg.Host, "\r\n /\\") {
 		return fmt.Errorf("smtp host is invalid")
 	}
+	if len([]byte(cfg.Username)) > 254 || strings.ContainsAny(cfg.Username, "\r\n\x00") {
+		return fmt.Errorf("smtp username is invalid")
+	}
+	if len([]byte(cfg.Password)) > 1024 || strings.ContainsAny(cfg.Password, "\r\n\x00") {
+		return fmt.Errorf("smtp password is invalid")
+	}
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		return fmt.Errorf("smtp port is invalid")
 	}
@@ -133,6 +156,49 @@ func validateSMTPConfig(cfg SMTPConfig) error {
 	}
 	if cfg.TLSMode == "none" && cfg.Auth != "none" {
 		return fmt.Errorf("smtp authenticated mode requires TLS")
+	}
+	return nil
+}
+
+// validateSMTPSettings permits an incomplete disabled draft while retaining
+// the same bounds and header-injection checks used for an enabled relay.
+func validateSMTPSettings(cfg SMTPConfig) error {
+	if cfg.Enabled {
+		return validateSMTPConfig(cfg)
+	}
+	if cfg.Host != "" && (len([]rune(cfg.Host)) > 253 || strings.ContainsAny(cfg.Host, "\r\n /\\")) {
+		return fmt.Errorf("smtp host is invalid")
+	}
+	if len([]byte(cfg.Username)) > 254 || strings.ContainsAny(cfg.Username, "\r\n\x00") {
+		return fmt.Errorf("smtp username is invalid")
+	}
+	if len([]byte(cfg.Password)) > 1024 || strings.ContainsAny(cfg.Password, "\r\n\x00") {
+		return fmt.Errorf("smtp password is invalid")
+	}
+	if cfg.From != "" && (len(cfg.From) > 254 || strings.ContainsAny(cfg.From, "\r\n")) {
+		return fmt.Errorf("smtp from address is invalid")
+	}
+	if cfg.FromName != "" && (len([]rune(cfg.FromName)) > 200 || strings.ContainsAny(cfg.FromName, "\r\n")) {
+		return fmt.Errorf("smtp from name is invalid")
+	}
+	if cfg.HELO != "" && (len([]rune(cfg.HELO)) > 253 || strings.ContainsAny(cfg.HELO, "\r\n ")) {
+		return fmt.Errorf("smtp helo is invalid")
+	}
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		return fmt.Errorf("smtp port is invalid")
+	}
+	if cfg.TimeoutSecond < 1 || cfg.TimeoutSecond > 300 {
+		return fmt.Errorf("smtp timeout must be between 1 and 300 seconds")
+	}
+	switch cfg.Auth {
+	case "auto", "none", "plain", "login", "cram-md5", "scram-sha-256", "xoauth2":
+	default:
+		return fmt.Errorf("smtp auth mode is not supported")
+	}
+	switch cfg.TLSMode {
+	case "starttls", "ssl", "none":
+	default:
+		return fmt.Errorf("smtp tls mode must be starttls, ssl, or none")
 	}
 	return nil
 }

@@ -12,6 +12,11 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
+var (
+	errAdmissionDeleteNotFound     = errors.New("admission delete target was not found")
+	errAdmissionAlreadyProvisioned = errors.New("admission delete target already has a provisioned student")
+)
+
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS cgu_users (
   id VARCHAR(64) PRIMARY KEY,
@@ -151,6 +156,22 @@ CREATE TABLE IF NOT EXISTS cgu_site_content (
   content_key VARCHAR(160) PRIMARY KEY,
   zh_text TEXT NOT NULL,
   en_text TEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS cgu_smtp_settings (
+  id TINYINT UNSIGNED PRIMARY KEY,
+  enabled_flag TINYINT(1) NOT NULL DEFAULT 0,
+  host_name VARCHAR(253) NOT NULL DEFAULT '',
+  port_number INT NOT NULL DEFAULT 587,
+  username_text VARCHAR(254) NOT NULL DEFAULT '',
+  password_ciphertext TEXT NOT NULL,
+  from_address VARCHAR(254) NOT NULL DEFAULT '',
+  from_name VARCHAR(200) NOT NULL DEFAULT '',
+  auth_mode VARCHAR(32) NOT NULL DEFAULT 'auto',
+  tls_mode VARCHAR(16) NOT NULL DEFAULT 'starttls',
+  helo_name VARCHAR(253) NOT NULL DEFAULT '',
+  timeout_seconds INT NOT NULL DEFAULT 15,
+  allow_insecure_flag TINYINT(1) NOT NULL DEFAULT 0,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 `
@@ -528,6 +549,10 @@ func (s *Store) loadDatabaseLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	smtpSettings, smtpUpdatedAt, err := loadSMTPSettings(ctx, s.db, s.smtpKey)
+	if err != nil {
+		return err
+	}
 	for id, user := range users {
 		s.users[id] = user
 	}
@@ -538,6 +563,8 @@ func (s *Store) loadDatabaseLocked(ctx context.Context) error {
 		copy := item
 		s.siteContent[item.Key] = &copy
 	}
+	s.smtpSettings = smtpSettings
+	s.smtpSettingsUpdatedAt = smtpUpdatedAt
 	s.enrollments, s.grades, s.schedule, s.announcements, s.admissions, s.notifications, s.mailbox = enrollments, grades, schedule, announcements, admissions, notifications, mailbox
 	return nil
 }
@@ -1039,6 +1066,39 @@ func (s *Store) deleteAdmissionPersistedLocked(id string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM cgu_admissions WHERE id = ?`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	var studentID sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT student_id FROM cgu_admissions WHERE id = ? FOR UPDATE`, id).Scan(&studentID); err != nil {
+		_ = tx.Rollback()
+		if errors.Is(err, sql.ErrNoRows) {
+			return errAdmissionDeleteNotFound
+		}
+		return err
+	}
+	if studentID.Valid && strings.TrimSpace(studentID.String) != "" {
+		_ = tx.Rollback()
+		return errAdmissionAlreadyProvisioned
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM cgu_admin_notifications WHERE reference_id = ?`, id); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM cgu_admissions WHERE id = ?`, id)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if rows != 1 {
+		_ = tx.Rollback()
+		return errAdmissionDeleteNotFound
+	}
+	return tx.Commit()
 }

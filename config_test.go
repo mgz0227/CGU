@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -70,14 +72,14 @@ func TestLoadConfigPrecedenceAndExplicitDatabaseDisable(t *testing.T) {
 	}
 }
 
-func TestLoadConfigSMTPPrecedence(t *testing.T) {
+func TestLoadConfigDoesNotReadSMTPSettings(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	envPath := filepath.Join(dir, ".env")
-	if err := os.WriteFile(configPath, []byte(`{"smtp":{"enabled":true,"host":"smtp-json.example","port":465,"username":"json-user","password":"json-secret","from":"json@example.com","auth":"auto","tlsMode":"ssl","timeoutSecond":20}}`), 0600); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"smtp":{"enabled":true,"host":"smtp-json.example","password":"json-secret"}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(envPath, []byte("CGU_SMTP_HOST=smtp-env.example\nCGU_SMTP_PASSWORD=env-secret\nCGU_SMTP_TIMEOUT_SECONDS=25\n"), 0600); err != nil {
+	if err := os.WriteFile(envPath, []byte("CGU_SMTP_HOST=smtp-env.example\nCGU_SMTP_PASSWORD=env-secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("CGU_CONFIG_FILE", configPath)
@@ -88,11 +90,12 @@ func TestLoadConfigSMTPPrecedence(t *testing.T) {
 		t.Setenv(key, "")
 	}
 	cfg := LoadConfig()
-	if !cfg.SMTP.Enabled || cfg.SMTP.Host != "smtp-env.example" || cfg.SMTP.Password != "env-secret" || cfg.SMTP.Port != 465 || cfg.SMTP.TimeoutSecond != 25 {
-		t.Fatalf("unexpected SMTP config precedence: enabled=%t host=%q port=%d timeout=%d password-set=%t", cfg.SMTP.Enabled, cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.TimeoutSecond, cfg.SMTP.Password != "")
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.SMTP.TLSMode != "ssl" || cfg.SMTP.From != "json@example.com" {
-		t.Fatalf("SMTP config values were not loaded from config.json: tls=%q from=%q", cfg.SMTP.TLSMode, cfg.SMTP.From)
+	if strings.Contains(string(encoded), "smtp-json.example") || strings.Contains(string(encoded), "env-secret") {
+		t.Fatal("SMTP settings must not be read from config.json or .env")
 	}
 }
 

@@ -181,8 +181,9 @@ type ScheduleInput struct {
 }
 
 // Mailbox messages are internal CGU academic notices with optional, recorded
-// external delivery metadata. SMTP credentials stay in deployment config and
-// are never part of this model or any student-facing projection.
+// external delivery metadata. SMTP credentials are managed in the protected
+// administrator settings store and are never part of this model or a student
+// projection.
 type MailboxMessage struct {
 	ID                 string `json:"id"`
 	RecipientID        string `json:"recipientId,omitempty"`
@@ -398,19 +399,22 @@ type session struct {
 }
 
 type Store struct {
-	mu                 sync.RWMutex
-	db                 *sql.DB
-	studentEmailDomain string
-	users              map[string]*User
-	courses            []*Course
-	enrollments        []*Enrollment
-	grades             []*Grade
-	schedule           []*ScheduleEntry
-	announcements      []*Announcement
-	admissions         []*AdmissionApplication
-	notifications      []*AdminNotification
-	mailbox            []*MailboxMessage
-	siteContent        map[string]*SiteContent
+	mu                    sync.RWMutex
+	db                    *sql.DB
+	smtpKey               []byte
+	smtpSettings          *SMTPConfig
+	smtpSettingsUpdatedAt string
+	studentEmailDomain    string
+	users                 map[string]*User
+	courses               []*Course
+	enrollments           []*Enrollment
+	grades                []*Grade
+	schedule              []*ScheduleEntry
+	announcements         []*Announcement
+	admissions            []*AdmissionApplication
+	notifications         []*AdminNotification
+	mailbox               []*MailboxMessage
+	siteContent           map[string]*SiteContent
 }
 
 func NewStore() *Store {
@@ -430,7 +434,7 @@ func NewStoreWithAdminAndDomain(username, password, emailDomain string) *Store {
 	if username == "" {
 		username = "admin"
 	}
-	s := &Store{studentEmailDomain: normalizeStudentEmailDomain(emailDomain), users: make(map[string]*User), siteContent: defaultSiteContent()}
+	s := &Store{studentEmailDomain: normalizeStudentEmailDomain(emailDomain), users: make(map[string]*User), siteContent: defaultSiteContent(), smtpKey: deriveSMTPKey(password)}
 	if strings.TrimSpace(password) != "" {
 		if passwordHash, err := hashPasswordChecked(password); err == nil {
 			s.users["admin"] = &User{
@@ -1556,19 +1560,44 @@ func (s *Store) approveAdmissionDatabaseLocked(id, approvedBy string) (*Admissio
 
 func (s *Store) deleteAdmission(id string) (*AdmissionApplication, *apiError) {
 	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, apiErr(http.StatusNotFound, "admission_not_found", "application not found")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, item := range s.admissions {
 		if item == nil || !strings.EqualFold(item.ID, id) {
 			continue
 		}
-		if strings.EqualFold(item.Status, "accepted") && strings.TrimSpace(item.StudentID) != "" {
-			return nil, apiErr(http.StatusConflict, "admission_already_approved", "approved applications cannot be deleted after student provisioning")
+		if strings.TrimSpace(item.StudentID) != "" {
+			return nil, apiErr(http.StatusConflict, "admission_already_approved", "applications with a provisioned student account cannot be deleted")
 		}
 		copy := *item
-		s.admissions = append(s.admissions[:i], s.admissions[i+1:]...)
+		// Keep the notification projection in sync with the application. Build
+		// replacement slices instead of editing the existing backing arrays so a
+		// persistence failure can restore both projections exactly.
+		previousAdmissions := s.admissions
+		previousNotifications := s.notifications
+		admissions := make([]*AdmissionApplication, 0, len(previousAdmissions)-1)
+		admissions = append(admissions, previousAdmissions[:i]...)
+		admissions = append(admissions, previousAdmissions[i+1:]...)
+		notifications := make([]*AdminNotification, 0, len(previousNotifications))
+		for _, notification := range previousNotifications {
+			if notification == nil || !strings.EqualFold(strings.TrimSpace(notification.ReferenceID), id) {
+				notifications = append(notifications, notification)
+			}
+		}
+		s.admissions = admissions
+		s.notifications = notifications
 		if err := s.deleteAdmissionPersistedLocked(id); err != nil {
-			s.admissions = append(s.admissions[:i], append([]*AdmissionApplication{item}, s.admissions[i:]...)...)
+			s.admissions = previousAdmissions
+			s.notifications = previousNotifications
+			if errors.Is(err, errAdmissionAlreadyProvisioned) {
+				return nil, apiErr(http.StatusConflict, "admission_already_approved", "applications with a provisioned student account cannot be deleted")
+			}
+			if errors.Is(err, errAdmissionDeleteNotFound) {
+				return nil, apiErr(http.StatusNotFound, "admission_not_found", "application not found")
+			}
 			return nil, apiErr(http.StatusServiceUnavailable, "admission_persistence_failed", "application could not be deleted")
 		}
 		return &copy, nil
@@ -1656,7 +1685,7 @@ func defaultSiteContent() map[string]*SiteContent {
 		{Key: "admin.subject", Zh: "主题", En: "Subject"},
 		{Key: "admin.messageBody", Zh: "正文", En: "Message body"},
 		{Key: "admin.externalDelivery", Zh: "同时发送到联系邮箱", En: "Also send to contact email"},
-		{Key: "admin.externalDeliveryHelp", Zh: "需要在服务端配置 SMTP；校内邮箱记录仍会保留。", En: "Requires SMTP configuration on the server; the internal mailbox copy is always retained."},
+		{Key: "admin.externalDeliveryHelp", Zh: "请先在“SMTP 外发”中保存设置；校内邮箱记录仍会保留。", En: "Save settings in SMTP delivery first; the internal mailbox copy is always retained."},
 		{Key: "admin.sendMessage", Zh: "发送邮件", En: "Send message"},
 		{Key: "admin.sendingMessage", Zh: "发送中…", En: "Sending…"},
 		{Key: "admin.sentMessages", Zh: "发送记录", En: "Sent messages"},
@@ -2714,6 +2743,7 @@ func first(values ...string) string {
 type Server struct {
 	store             *Store
 	mailer            ExternalMailSender
+	smtpMu            sync.RWMutex
 	smtpSlots         chan struct{}
 	smtpTimeout       time.Duration
 	staticDir         string
@@ -2751,11 +2781,23 @@ func NewServer(store *Store, staticDir string) *Server {
 }
 
 func (s *Server) setExternalMailSender(sender ExternalMailSender) {
+	s.smtpMu.Lock()
+	defer s.smtpMu.Unlock()
 	s.mailer = sender
 	s.smtpTimeout = mailboxExternalSendTimeout
 	if mailer, ok := sender.(*SMTPMailer); ok && mailer != nil && mailer.cfg.TimeoutSecond > 0 {
 		s.smtpTimeout = time.Duration(mailer.cfg.TimeoutSecond) * time.Second
 	}
+}
+
+func (s *Server) smtpSender() (ExternalMailSender, time.Duration) {
+	s.smtpMu.RLock()
+	defer s.smtpMu.RUnlock()
+	timeout := s.smtpTimeout
+	if timeout <= 0 {
+		timeout = mailboxExternalSendTimeout
+	}
+	return s.mailer, timeout
 }
 
 func (s *Server) setTrustedProxies(values []string) error {
@@ -3008,6 +3050,20 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		} else {
 			methodNotAllowed(w, http.MethodGet, http.MethodPost)
 		}
+	case p == "/api/admin/smtp":
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		s.adminSMTP(w, r)
+	case p == "/api/admin/smtp/test":
+		if !s.requireAdmin(w, r) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		s.testAdminSMTP(w, r)
 	case strings.HasPrefix(p, "/api/admin/mailbox/"):
 		if !s.requireAdmin(w, r) {
 			return
@@ -3161,10 +3217,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPatch || r.Method == http.MethodPut {
 			s.updateAdmission(w, r, id)
 		} else if r.Method == http.MethodDelete {
-			// An admission record is part of the audit trail. The only workflow
-			// decision is the explicit approve action; deleting a pending row
-			// would bypass notification and review history.
-			methodNotAllowed(w, http.MethodPatch, http.MethodPut)
+			s.deleteAdmission(w, id)
 		} else {
 			methodNotAllowed(w, http.MethodPatch, http.MethodPut, http.MethodDelete)
 		}
@@ -3786,7 +3839,11 @@ func (s *Server) queueAdmissionNotice(result *AdmissionApproval) {
 	if result == nil || strings.TrimSpace(result.MailboxID) == "" {
 		return
 	}
-	if _, realSMTP := s.mailer.(*SMTPMailer); realSMTP {
+	if sender, _ := s.smtpSender(); sender != nil {
+		if _, realSMTP := sender.(*SMTPMailer); !realSMTP {
+			s.deliverAdmissionNotice(context.Background(), result)
+			return
+		}
 		queued := *result
 		go s.deliverAdmissionNotice(context.Background(), &queued)
 		return
@@ -4518,17 +4575,13 @@ func main() {
 	if database != nil {
 		defer database.Close()
 	}
-	if cfg.SMTP.Enabled && storageMode != "mysql" {
-		log.Fatal("SMTP external delivery requires a healthy MySQL store; refusing to start with memory fallback")
-	}
 	handler := NewServer(store, cfg.StaticDir)
-	if cfg.SMTP.Enabled {
-		mailer, mailerErr := NewSMTPMailer(cfg.SMTP)
-		if mailerErr != nil {
-			log.Fatalf("SMTP configuration is invalid: %v", mailerErr)
+	// SMTP is loaded from the administrator settings table after the database
+	// attach. Missing settings intentionally leave external delivery disabled.
+	if storageMode == "mysql" {
+		if err := handler.refreshSMTPMailer(); err != nil {
+			log.Printf("CGU SMTP settings are invalid; external delivery disabled: %v", err)
 		}
-		handler.setExternalMailSender(mailer)
-		log.Printf("CGU SMTP external delivery enabled (host=%s port=%d tls=%s)", cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.TLSMode)
 	}
 	// LoadConfig already applies environment, .env, and config.json precedence.
 	if err := handler.setTrustedProxies(cfg.TrustedProxies); err != nil {
@@ -4547,12 +4600,9 @@ func main() {
 		handler.cookieSecure = cfg.CookieSecure
 	}
 	handler.setStorageMode(storageMode)
-	writeTimeout := 30 * time.Second
-	if cfg.SMTP.Enabled && cfg.SMTP.TimeoutSecond > 0 {
-		// Leave a small response window after the SMTP client deadline rather
-		// than silently truncating a configured provider timeout.
-		writeTimeout = time.Duration(cfg.SMTP.TimeoutSecond+5) * time.Second
-	}
+	// SMTP relay timeouts are administrator-managed and can be up to five
+	// minutes; leave enough response budget for a synchronous mailbox request.
+	writeTimeout := 305 * time.Second
 	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: writeTimeout, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	log.Printf("CGU Go service listening on http://%s", addr)
 	serverErrors := make(chan error, 1)

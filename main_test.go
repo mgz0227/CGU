@@ -1234,11 +1234,11 @@ func TestApprovedStudentIdentityCannotBeChanged(t *testing.T) {
 	}
 }
 
-func TestAdmissionDeleteIsNotAWorkflowDecision(t *testing.T) {
+func TestAdmissionDeleteRequiresAdminCSRFAndRemovesPendingApplication(t *testing.T) {
 	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
 	server := httptest.NewServer(NewServer(store, "web"))
 	defer server.Close()
-	created := postJSON(t, &http.Client{}, server.URL+"/api/admissions", map[string]string{"name": "保留审计申请", "email": "audit@example.com", "school": "综合学院"})
+	created := postJSON(t, &http.Client{}, server.URL+"/api/admissions", map[string]string{"name": "待删除申请", "email": "delete@example.com", "school": "综合学院"})
 	if created.StatusCode != http.StatusCreated {
 		t.Fatalf("admission create status = %d", created.StatusCode)
 	}
@@ -1249,6 +1249,19 @@ func TestAdmissionDeleteIsNotAWorkflowDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	created.Body.Close()
+	unauthorizedRequest, err := http.NewRequest(http.MethodDelete, server.URL+"/api/admin/admissions/"+url.PathEscape(payload.Application.ID), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorizedRequest.Header.Set("X-CGU-Request", "1")
+	unauthorizedResponse, err := (&http.Client{}).Do(unauthorizedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unauthorizedResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous admission delete status = %d", unauthorizedResponse.StatusCode)
+	}
+	unauthorizedResponse.Body.Close()
 	adminJar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1259,13 +1272,32 @@ func TestAdmissionDeleteIsNotAWorkflowDecision(t *testing.T) {
 		t.Fatalf("admin login status = %d", login.StatusCode)
 	}
 	login.Body.Close()
+
+	// A browser-like authenticated request without the explicit same-site
+	// header must still be rejected by the global CSRF guard.
+	withoutCSRF, err := http.NewRequest(http.MethodDelete, server.URL+"/api/admin/admissions/"+url.PathEscape(payload.Application.ID), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutCSRFResponse, err := adminClient.Do(withoutCSRF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutCSRFResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("admission delete without CSRF status = %d", withoutCSRFResponse.StatusCode)
+	}
+	withoutCSRFResponse.Body.Close()
+
 	deleted := doJSON(t, adminClient, http.MethodDelete, server.URL+"/api/admin/admissions/"+url.PathEscape(payload.Application.ID), nil)
-	if deleted.StatusCode != http.StatusMethodNotAllowed {
+	if deleted.StatusCode != http.StatusOK {
 		t.Fatalf("admission delete status = %d", deleted.StatusCode)
 	}
 	deleted.Body.Close()
-	if len(store.admissions) != 1 {
-		t.Fatalf("admission audit row count = %d", len(store.admissions))
+	if len(store.admissions) != 0 {
+		t.Fatalf("deleted admission row count = %d", len(store.admissions))
+	}
+	if len(store.notifications) != 0 {
+		t.Fatalf("orphan notification count = %d", len(store.notifications))
 	}
 }
 

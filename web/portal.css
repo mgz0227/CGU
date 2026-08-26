@@ -212,6 +212,22 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
 .quick-link b { color: var(--portal-coral); font-size: 19px; font-weight: 400; }
 .admin-editor { margin: -5px 0 22px; padding: 27px; border: 1px solid var(--portal-line); background: rgba(230, 224, 211, .35); }
 .admin-section-help { max-width: 760px; margin: -10px 0 22px; color: var(--portal-muted); font-size: 12px; line-height: 1.7; }
+.smtp-editor { margin-top: 0; }
+.smtp-form .form-grid { align-items: start; }
+.smtp-form .checkbox-field { min-height: 52px; }
+.smtp-status { flex: 0 0 auto; }
+.smtp-password-note { margin: 18px 0 0; color: var(--portal-muted); font-size: 11px; }
+.smtp-password-note[data-configured="true"] { color: #477870; }
+.smtp-actions { margin-top: 18px; }
+.smtp-test-panel { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 1.2fr); gap: 26px; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--portal-line); }
+.smtp-test-panel h3 { margin: 4px 0 8px; color: var(--portal-ink); font-family: Georgia, "Songti SC", serif; font-size: 25px; font-weight: 400; }
+.smtp-test-panel .admin-section-help { margin: 0; }
+.smtp-test-controls { display: flex; align-items: end; gap: 13px; }
+.smtp-test-controls label { flex: 1 1 auto; }
+.smtp-test-controls .portal-button { flex: 0 0 auto; min-height: 43px; }
+.smtp-test-result { min-height: 20px; margin: 15px 0 0; color: var(--portal-muted); font-size: 11px; }
+.smtp-test-result[data-kind="success"] { color: #477870; }
+.smtp-test-result[data-kind="error"] { color: #a44735; }
 .content-language-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .content-table { min-width: 900px; table-layout: fixed; }
 .content-table th:first-child, .content-table td:first-child { width: 220px; }
@@ -339,6 +355,7 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
   .admin-record-panel { padding: 16px; }
   .admin-record-panel .section-heading-inline { align-items: flex-start; flex-direction: row; }
   .admin-actions { justify-content: flex-start; }
+  .smtp-test-panel { grid-template-columns: 1fr; gap: 15px; }
 }
 
 @media (max-width: 440px) {
@@ -351,6 +368,8 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
   .form-grid { grid-template-columns: 1fr; gap: 15px; }
   .content-language-grid { grid-template-columns: 1fr; gap: 15px; }
   .admin-record-panel .form-grid { grid-template-columns: 1fr; }
+  .smtp-test-controls { align-items: stretch; flex-direction: column; }
+  .smtp-test-controls .portal-button { align-self: flex-start; }
   .section-heading-inline { align-items: flex-start; flex-direction: column; gap: 8px; }
   .section-count { padding-bottom: 0; }
   .profile-fields { grid-template-columns: 1fr; }

@@ -35,6 +35,22 @@
     adminNotificationUnread: 0,
     adminSiteContent: [],
     adminStats: {},
+    adminSMTP: {
+      enabled: false,
+      host: '',
+      port: 587,
+      username: '',
+      from: '',
+      fromName: '',
+      auth: 'auto',
+      tlsMode: 'starttls',
+      helo: '',
+      timeoutSecond: 15,
+      allowInsecure: false,
+      passwordConfigured: false
+    },
+    adminSMTPAvailable: false,
+    adminSMTPTestResult: null,
     adminLoading: false,
     // Ignore an older all-sections response that started before an editor
     // mutation completed. Without this guard a slow refresh could put a newly
@@ -58,14 +74,22 @@
 
   const localizedError = (error, fallbackKey = 'common.error') => {
     if (error?.network) return I18N.t('common.networkError');
-    if (Number(error?.status) >= 500 || error?.code === 'api_unavailable') return I18N.t('common.apiUnavailable');
     const errorKey = {
       course_in_use: 'admin.courseInUse',
       schedule_overlap: 'admin.scheduleOverlap',
       course_full: 'portal.courseFull',
-      student_exists: 'admin.studentExists'
+      student_exists: 'admin.studentExists',
+      admission_already_approved: 'admin.admissionDeleteBlocked',
+      invalid_smtp_settings: 'admin.smtpInvalidSettings',
+      smtp_settings_unavailable: 'admin.smtpUnavailable',
+      smtp_requires_mysql: 'admin.smtpRequiresMySQL',
+      smtp_not_configured: 'admin.smtpDisabled',
+      invalid_recipient: 'admin.smtpTestRecipientRequired',
+      smtp_test_failed: 'admin.smtpTestFailed',
+      smtp_test_busy: 'admin.smtpTestBusy'
     }[error?.code];
     if (errorKey) return I18N.t(errorKey);
+    if (Number(error?.status) >= 500 || error?.code === 'api_unavailable') return I18N.t('common.apiUnavailable');
     return I18N.t(fallbackKey);
   };
 
@@ -356,6 +380,30 @@
     createdAt: value.createdAt ?? value.created_at ?? '',
     readAt: value.readAt ?? value.read_at ?? ''
   });
+
+  // SMTP passwords are intentionally excluded from the normalized client
+  // state. The API may return a passwordConfigured flag, but never needs to
+  // send the secret back to the browser.
+  const normalizeSMTPSettings = (value = {}) => {
+    const source = value?.settings || value?.smtp || value?.config || value?.data?.settings || value || {};
+    const bool = (item) => item === true || item === 1 || String(item ?? '').toLowerCase() === 'true';
+    const authValue = String(source.auth ?? source.authentication ?? 'auto').trim().toLowerCase().replace(/_/g, '-');
+    const tlsValue = String(source.tlsMode ?? source.tls_mode ?? source.tls ?? 'starttls').trim().toLowerCase().replace(/_/g, '-');
+    return {
+      enabled: bool(source.enabled ?? source.isEnabled),
+      host: String(source.host ?? '').trim(),
+      port: numberValue(source.port, 587),
+      username: String(source.username ?? source.user ?? '').trim(),
+      from: String(source.from ?? source.fromAddress ?? source.from_address ?? '').trim(),
+      fromName: String(source.fromName ?? source.from_name ?? '').trim(),
+      auth: authValue || 'auto',
+      tlsMode: tlsValue === 'start-tls' || tlsValue === 'starttls' ? 'starttls' : tlsValue === 'implicit' || tlsValue === 'ssl/tls' || tlsValue === 'tls' ? 'ssl' : tlsValue || 'starttls',
+      helo: String(source.helo ?? source.heloName ?? source.helo_name ?? '').trim(),
+      timeoutSecond: numberValue(source.timeoutSecond ?? source.timeoutSeconds ?? source.timeout_seconds ?? source.timeout, 15),
+      allowInsecure: bool(source.allowInsecure ?? source.allow_insecure),
+      passwordConfigured: bool(value?.passwordConfigured ?? source.passwordConfigured ?? source.passwordSet ?? source.hasPassword)
+    };
+  };
 
   const mailboxDeliveryLabel = (status) => I18N.t(({ internal: 'admin.deliveryInternal', pending: 'admin.deliveryPending', sending: 'admin.deliverySending', sent: 'admin.deliverySent', failed: 'admin.deliveryFailed', not_configured: 'admin.deliveryNotConfigured', unknown: 'admin.deliveryUnknown' }[status] || 'admin.deliveryInternal'));
   const mailboxDeliveryClass = (status) => status === 'failed' || status === 'not_configured' || status === 'unknown' ? ' is-full' : status === 'pending' || status === 'sending' ? ' is-progress' : '';
@@ -949,6 +997,7 @@
     renderAdminReferenceOptions();
     renderAdminAcademic();
     renderAdminMailbox();
+    renderAdminSMTP();
     renderSiteContent();
     I18N.apply();
   };
@@ -958,9 +1007,10 @@
     if (!list) return;
     list.innerHTML = state.adminAdmissions.length ? state.adminAdmissions.map((item) => {
       const status = String(item.status || 'pending').toLowerCase();
-      const approved = status === 'accepted' && Boolean(item.studentId);
+      const provisioned = Boolean(String(item.studentId || '').trim());
+      const approved = status === 'accepted' && provisioned;
       const terminal = status === 'rejected' || status === 'withdrawn';
-      const incomplete = status === 'accepted' && !item.studentId;
+      const incomplete = status === 'accepted' && !provisioned;
       const credentials = item.issuedCredentials || item.credentials;
       const credentialPanel = credentials?.password ? `<div class="admission-credentials" role="status"><strong>${escapeHTML(I18N.t('admin.admissionCredentials'))}</strong><span>${escapeHTML(I18N.t('admin.admissionUsername'))}: ${escapeHTML(credentials.username || notAvailable())}</span><span>${escapeHTML(I18N.t('admin.admissionPassword'))}: <code>${escapeHTML(credentials.password)}</code></span><span>${escapeHTML(I18N.t('portal.studentEmail'))}: ${escapeHTML(credentials.studentEmail || credentials.email || notAvailable())}</span><button class="table-action" type="button" data-admission-copy-password="${escapeHTML(credentials.password)}">${escapeHTML(I18N.t('admin.admissionCopyPassword'))}</button></div>` : '';
       const deliveryStatus = item.deliveryStatus || '';
@@ -969,7 +1019,8 @@
       const deliveryPanel = deliveryNotice ? `<small class="admission-provisioned">${escapeHTML(deliveryNotice)}${deliveryDiagnostic}</small>` : '';
       const notesPanel = `<div class="admission-notes-editor" data-admission-notes-editor><label><span>${escapeHTML(I18N.t('admin.notes'))}</span><textarea data-admission-notes rows="2" maxlength="2000" placeholder="${escapeHTML(I18N.t('admin.notesPlaceholder'))}">${escapeHTML(item.notes || '')}</textarea></label><button class="table-action" type="button" data-admission-save-notes><span data-i18n="admin.saveNotes">${escapeHTML(I18N.t('admin.saveNotes'))}</span></button></div>`;
       const statusKey = incomplete ? 'admin.admissionIncomplete' : status === 'accepted' ? 'admin.admissionAccepted' : status === 'reviewing' ? 'admin.admissionReviewing' : status === 'contacted' ? 'admin.admissionContacted' : 'admin.admissionPending';
-      const action = approved ? `<div class="admin-actions"><span class="status-pill">${escapeHTML(I18N.t('admin.admissionApproved'))}</span><small class="admin-announcement-meta">${escapeHTML(item.studentId || notAvailable())}</small></div>` : terminal ? `<div class="admin-actions"><span class="status-pill is-full">${escapeHTML(I18N.t(status === 'withdrawn' ? 'admin.admissionWithdrawn' : 'admin.admissionRejected'))}</span></div>` : `<div class="admin-actions"><span class="status-pill is-progress">${escapeHTML(I18N.t(statusKey))}</span><button class="portal-button portal-button-gold" type="button" data-admission-approve="${escapeHTML(item.id)}"><span>${escapeHTML(I18N.t(incomplete ? 'admin.admissionRepair' : 'admin.admissionApprove'))}</span><span aria-hidden="true">→</span></button></div>`;
+      const deleteAction = !provisioned ? `<button class="table-action is-danger" type="button" data-admission-delete="${escapeHTML(item.id)}"><span data-i18n="admin.admissionDelete">${escapeHTML(I18N.t('admin.admissionDelete'))}</span></button>` : '';
+      const action = approved ? `<div class="admin-actions"><span class="status-pill">${escapeHTML(I18N.t('admin.admissionApproved'))}</span><small class="admin-announcement-meta">${escapeHTML(item.studentId || notAvailable())}</small></div>` : terminal ? `<div class="admin-actions"><span class="status-pill is-full">${escapeHTML(I18N.t(status === 'withdrawn' ? 'admin.admissionWithdrawn' : 'admin.admissionRejected'))}</span>${deleteAction}</div>` : `<div class="admin-actions"><span class="status-pill is-progress">${escapeHTML(I18N.t(statusKey))}</span><button class="portal-button portal-button-gold" type="button" data-admission-approve="${escapeHTML(item.id)}"><span>${escapeHTML(I18N.t(incomplete ? 'admin.admissionRepair' : 'admin.admissionApprove'))}</span><span aria-hidden="true">→</span></button>${deleteAction}</div>`;
       return `<article class="admin-admission-row${approved ? ' is-approved' : terminal || incomplete ? ' is-closed' : ''}" data-admission-id="${escapeHTML(item.id)}"><div><span class="announcement-type">${escapeHTML(item.school || I18N.t('admin.admissionUndecided'))}</span><h3>${escapeHTML(item.name || notAvailable())}</h3><p><a href="mailto:${escapeHTML(item.email)}">${escapeHTML(item.email || notAvailable())}</a></p>${approved ? `<small class="admission-provisioned">${escapeHTML(I18N.t('admin.admissionProvisioned'))}</small>${deliveryPanel}` : ''}${credentialPanel}${notesPanel}</div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.createdAt, true))}</div>${action}</article>`;
     }).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noAdmissions'))}</p>`;
   };
@@ -1006,6 +1057,38 @@
     }).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noMailboxMessages'))}</p>`;
   };
 
+  const renderAdminSMTP = () => {
+    const form = document.querySelector('[data-smtp-form]');
+    const settings = normalizeSMTPSettings(state.adminSMTP);
+    state.adminSMTP = settings;
+    const status = document.querySelector('[data-smtp-status]');
+    const configured = settings.enabled && settings.host && settings.from;
+    if (status) {
+      status.className = `status-pill smtp-status${!state.adminSMTPAvailable ? ' is-progress' : configured ? '' : settings.enabled ? ' is-full' : ' is-progress'}`;
+      status.textContent = !state.adminSMTPAvailable
+        ? I18N.t('admin.smtpStatusUnavailable')
+        : configured
+          ? I18N.t('admin.smtpStatusConfigured')
+          : settings.enabled
+            ? I18N.t('admin.smtpStatusIncomplete')
+            : I18N.t('admin.smtpStatusDisabled');
+    }
+    if (form && form.dataset.dirty !== 'true') {
+      fillForm(form, settings, ['enabled', 'host', 'port', 'username', 'from', 'fromName', 'auth', 'tlsMode', 'helo', 'timeoutSecond', 'allowInsecure']);
+      if (form.elements.password) form.elements.password.value = '';
+    }
+    const passwordStatus = document.querySelector('[data-smtp-password-status]');
+    if (passwordStatus) {
+      passwordStatus.textContent = settings.passwordConfigured ? I18N.t('admin.smtpPasswordConfigured') : I18N.t('admin.smtpPasswordNotConfigured');
+      passwordStatus.dataset.configured = settings.passwordConfigured ? 'true' : 'false';
+    }
+    const result = document.querySelector('[data-smtp-test-result]');
+    if (result) {
+      result.textContent = state.adminSMTPTestResult?.message || (state.adminSMTPTestResult?.key ? I18N.t(state.adminSMTPTestResult.key) : '');
+      result.dataset.kind = state.adminSMTPTestResult?.kind || '';
+    }
+  };
+
   const renderAdminLoadError = () => {
     const message = I18N.t('admin.loadError');
     document.querySelectorAll('[data-admin-course-list]').forEach((list) => { list.innerHTML = `<tr><td colspan="8" class="empty-state">${escapeHTML(message)}</td></tr>`; });
@@ -1025,6 +1108,18 @@
   const adminRequest = async (path, method, body) => {
     state.adminMutationVersion += 1;
     return postJSON(path, method, body || {});
+  };
+
+  const getAdminSMTP = async () => {
+    try { return await api('/admin/smtp'); }
+    catch (error) {
+      if (error?.status === 404 || error?.status === 405) return null;
+      throw error;
+    }
+  };
+  const requestAdminSMTP = async (suffix, method, body, mutate = true) => {
+    if (mutate) state.adminMutationVersion += 1;
+    return postJSON(`/admin/smtp${suffix}`, method, body || {});
   };
 
   // Every admin editor shares the same submit lock. This gives an immediate
@@ -1171,6 +1266,25 @@
         } catch { showToast(I18N.t('admin.admissionCopyFailed')); }
         return;
       }
+      const deleteButton = event.target.closest('[data-admission-delete]');
+      if (deleteButton) {
+        const item = state.adminAdmissions.find((value) => String(value.id) === String(deleteButton.dataset.admissionDelete));
+        if (!item || String(item.studentId || '').trim() || !window.confirm(I18N.t('admin.admissionDeleteConfirm'))) return;
+        setButtonLoading(deleteButton, true, 'admin.admissionDeleting');
+        try {
+          await adminRequest(`/admin/admissions/${encodeURIComponent(item.id)}`, 'DELETE');
+          state.adminAdmissions = state.adminAdmissions.filter((value) => String(value.id) !== String(item.id));
+          const removedNotificationIDs = new Set(state.adminNotifications.filter((value) => String(value.referenceId) === String(item.id)).map((value) => String(value.id)));
+          state.adminNotifications = state.adminNotifications.filter((value) => !removedNotificationIDs.has(String(value.id)));
+          state.adminNotificationUnread = state.adminNotifications.filter((value) => !value.readAt).length;
+          renderAdmin();
+          showToast(I18N.t('admin.admissionDeleted'));
+        } catch (error) {
+          if (isAuthError(error)) redirectToLogin(); else showToast(localizedError(error, 'admin.error'));
+          setButtonLoading(deleteButton, false, 'admin.admissionDelete');
+        }
+        return;
+      }
       const notesButton = event.target.closest('[data-admission-save-notes]');
       if (notesButton) {
         const row = notesButton.closest('[data-admission-id]');
@@ -1304,6 +1418,107 @@
           renderAdminMailbox();
         }
         if (isAuthError(error)) redirectToLogin(); else showToast(localizedError(error, 'admin.error'));
+      }
+    });
+  };
+
+  const smtpFormPayload = (form) => {
+    const values = Object.fromEntries(new FormData(form).entries());
+    const payload = {
+      enabled: form.elements.enabled?.checked === true,
+      host: String(values.host || '').trim(),
+      port: numberValue(values.port, 587),
+      username: String(values.username || '').trim(),
+      from: String(values.from || '').trim(),
+      fromName: String(values.fromName || '').trim(),
+      auth: String(values.auth || 'auto').trim().toLowerCase(),
+      tlsMode: String(values.tlsMode || 'starttls').trim().toLowerCase(),
+      helo: String(values.helo || '').trim(),
+      timeoutSecond: numberValue(values.timeoutSecond, 15),
+      allowInsecure: form.elements.allowInsecure?.checked === true
+    };
+    // An empty password is deliberate: the server keeps the existing secret.
+    // Never send a blank value that could accidentally clear a stored secret.
+    if (typeof values.password === 'string' && values.password.length > 0) payload.password = values.password;
+    return payload;
+  };
+
+  const smtpValidationKey = (form, payload) => {
+    if (!payload.enabled) return '';
+    if (!payload.host) return 'admin.smtpHostRequired';
+    if (!payload.from) return 'admin.smtpFromRequired';
+    if (!form.elements.from?.checkValidity()) return 'admin.smtpFromInvalid';
+    if (payload.port < 1 || payload.port > 65535) return 'admin.smtpPortInvalid';
+    if (payload.timeoutSecond < 1 || payload.timeoutSecond > 300) return 'admin.smtpTimeoutInvalid';
+    if (payload.tlsMode === 'ssl' && payload.port !== 465) return 'admin.smtpTLSPort';
+    if (payload.tlsMode === 'none' && !payload.allowInsecure) return 'admin.smtpInsecureRequired';
+    if (payload.auth !== 'none' && !payload.username) return 'admin.smtpUsernameRequired';
+    if (payload.auth !== 'none' && !state.adminSMTP.passwordConfigured && !payload.password) return 'admin.smtpPasswordRequired';
+    return '';
+  };
+
+  const handleAdminSMTP = () => {
+    const form = document.querySelector('[data-smtp-form]');
+    if (!form) return;
+    const submit = form.querySelector('button[type="submit"]');
+    const reset = form.querySelector('[data-smtp-reset]');
+    const testButton = document.querySelector('[data-smtp-test]');
+    const testRecipient = document.querySelector('[data-smtp-test-recipient]');
+    const testResult = document.querySelector('[data-smtp-test-result]');
+    const setTestResult = (kind, key = '', message = '') => {
+      state.adminSMTPTestResult = key || message ? { kind, key, message } : null;
+      if (testResult) {
+        testResult.textContent = message || (key ? I18N.t(key) : '');
+        testResult.dataset.kind = kind || '';
+      }
+    };
+    form.addEventListener('input', () => { form.dataset.dirty = 'true'; });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!form.checkValidity()) { showToast(I18N.t('admin.required')); form.reportValidity(); return; }
+      if (!state.adminSMTPAvailable) { showToast(I18N.t('admin.smtpNotLoaded')); return; }
+      const payload = smtpFormPayload(form);
+      const validationKey = smtpValidationKey(form, payload);
+      if (validationKey) { showToast(I18N.t(validationKey)); return; }
+      if (!beginAdminFormSubmit(form)) return;
+      try {
+        const result = await requestAdminSMTP('', 'PUT', payload);
+        state.adminSMTP = normalizeSMTPSettings(result);
+        state.adminSMTPAvailable = true;
+        state.adminSMTPTestResult = null;
+        delete form.dataset.dirty;
+        renderAdminSMTP();
+        showToast(I18N.t('admin.smtpSaved'));
+      } catch (error) {
+        if (isAuthError(error)) redirectToLogin();
+        else showToast(localizedError(error, 'admin.error'));
+      } finally {
+        endAdminFormSubmit(form);
+      }
+    });
+    reset?.addEventListener('click', () => {
+      delete form.dataset.dirty;
+      form.reset();
+      if (form.elements.password) form.elements.password.value = '';
+      renderAdminSMTP();
+      setTestResult('', '', '');
+    });
+    testButton?.addEventListener('click', async () => {
+      if (form.dataset.dirty === 'true') { setTestResult('error', 'admin.smtpSaveFirst'); return; }
+      const recipient = String(testRecipient?.value || '').trim();
+      if (!recipient || !testRecipient?.checkValidity()) { setTestResult('error', 'admin.smtpTestRecipientRequired'); testRecipient?.focus(); return; }
+      if (!state.adminSMTPAvailable) { setTestResult('error', 'admin.smtpStatusUnavailable'); return; }
+      if (!state.adminSMTP.enabled) { setTestResult('error', 'admin.smtpDisabled'); return; }
+      setButtonLoading(testButton, true, 'admin.smtpTesting');
+      setTestResult('', '', '');
+      try {
+        await requestAdminSMTP('/test', 'POST', { recipient }, false);
+        setTestResult('success', 'admin.smtpTestSuccess');
+      } catch (error) {
+        if (isAuthError(error)) { redirectToLogin(); return; }
+        setTestResult('error', 'admin.smtpTestFailed');
+      } finally {
+        setButtonLoading(testButton, false, 'admin.smtpTest');
       }
     });
   };
@@ -1505,7 +1720,8 @@
       optionalResource('/admin/mailbox', ['messages', 'items']),
       api('/admin/notifications'),
       api('/admin/stats'),
-      resource('/admin/site-content', ['content', 'items'])
+      resource('/admin/site-content', ['content', 'items']),
+      getAdminSMTP()
     ];
     const results = await Promise.allSettled(requests);
     const authFailure = results.find((result) => result.status === 'rejected' && isAuthError(result.reason));
@@ -1528,6 +1744,7 @@
     const notifications = valueAt(7, { notifications: state.adminNotifications, unread: state.adminNotificationUnread });
     const stats = valueAt(8, state.adminStats);
     const content = valueAt(9, state.adminSiteContent);
+    const smtp = valueAt(10, null);
     const managed = new Map((I18N.catalog?.() || []).map((item) => [item.key, normalizeSiteContent(item)]));
     (Array.isArray(content) ? content : []).map(normalizeSiteContent).filter((item) => item.key !== 'common.loading').forEach((item) => {
       const existing = managed.get(item.key) || {};
@@ -1553,6 +1770,10 @@
     state.adminNotificationUnread = Number(notifications?.unread) || 0;
     state.adminSiteContent = [...managed.values()].filter((item) => item.key).sort((a, b) => a.key.localeCompare(b.key));
     state.adminStats = stats || {};
+    if (smtp !== null) {
+      state.adminSMTP = normalizeSMTPSettings(smtp);
+      state.adminSMTPAvailable = smtp?.available === undefined ? true : Boolean(smtp.available);
+    }
     renderAdmin();
     showPageAlert(results.some((result) => result.status === 'rejected') ? I18N.t('admin.loadPartialError') : '');
     return true;
@@ -1593,7 +1814,7 @@
 
   const initAdmin = async () => {
     setupHashNav('admin');
-    handleAdminCourseForm(); handleAdminAnnouncementForm(); handleAdminSiteContent(); handleAdminAdmissions(); handleAdminNotifications(); handleAdminMailbox(); handleAdminStudents(); handleAdminGrades(); handleAdminSchedule();
+    handleAdminCourseForm(); handleAdminAnnouncementForm(); handleAdminSiteContent(); handleAdminAdmissions(); handleAdminNotifications(); handleAdminMailbox(); handleAdminSMTP(); handleAdminStudents(); handleAdminGrades(); handleAdminSchedule();
     document.querySelector('[data-admin-refresh]')?.addEventListener('click', () => loadAdminData());
     // Bind every editor before waiting on i18n/auth/data. This keeps actions
     // deterministic when an API is slow and ensures a failed list request

@@ -1,7 +1,7 @@
 # CGU security audit
 
 Audit date: 2026-08-25
-Follow-up: 2026-08-26 (v1.5.5 hardening)
+Follow-up: 2026-08-26 (v1.5.6 SMTP settings hardening)
 
 Scope: Go HTTP service, cookie authentication, MySQL adapter, and browser
 client code in `web/`. The audit follows the repository's Go and web
@@ -24,6 +24,11 @@ extensions from accidental static-directory exposure, and restricts portal
 hash navigation to known section IDs. A Windows local run verified tests,
 vet, build, and browser flows; the repository CI race and vulnerability gates
 remain authoritative for release.
+
+The v1.5.6 follow-up removes SMTP credentials from deployment configuration.
+Administrators now save relay settings through an authenticated, CSRF-protected
+API backed by MySQL. Passwords are AES-GCM encrypted at rest and represented to
+the browser only by a boolean `passwordConfigured` flag.
 
 ## Findings and dispositions
 
@@ -185,13 +190,16 @@ remain authoritative for release.
   unknown and requires explicit administrator confirmation before retrying.
   SMTP acceptance is not a final inbox-delivery guarantee.
 
-### GO-SMTP-001: outbound SMTP configuration and header injection (High, fixed)
+### GO-SMTP-001: outbound SMTP credentials and header injection (High, fixed)
 
-- Location: `smtp_mailer.go`, `config.go`, and the administrator mailbox flow.
+- Location: `smtp_mailer.go`, `smtp_settings.go`, `database.go`, and the
+  administrator SMTP/mailbox flows.
 - Evidence: SMTP is disabled by default; enabled configurations require a
   validated host/from address, bounded timeout, authenticated TLS by default,
-  and explicit opt-in for plaintext. Recipient and subject values reject CRLF,
-  and the mail client uses a context deadline without logging credentials.
+  and explicit opt-in for plaintext. The API is administrator-only and covered
+  by the existing custom-header and same-origin CSRF checks. Recipient, sender,
+  and subject values reject CRLF; concurrent test sends are bounded. Passwords
+  are encrypted with a random AES-GCM nonce and never returned or logged.
 - Impact: limits accidental plaintext credential exposure, SMTP header
   injection, and requests that hold an HTTP worker indefinitely.
 - Fix: use the maintained `github.com/wneessen/go-mail` client with mandatory
@@ -203,10 +211,12 @@ remain authoritative for release.
   and retries use a conditional database lease so concurrent replicas cannot
   claim the same row. SMTP sends are bounded below the HTTP write timeout, and
   production SMTP is refused without MySQL durability.
-- Residual mitigation: inject credentials through a secret manager, restrict
-  outbound egress to the approved relay, configure SPF/DKIM/DMARC and provider
-  rate limits, and monitor failed/bounced messages. This application does not
-  claim delivery success until the SMTP server accepts the message.
+- Residual mitigation: keep `CGU_SETTINGS_ENCRYPTION_KEY` in a deployment secret
+  manager, back it up with the database, and rotate it only with an explicit
+  re-encryption migration. Restrict outbound egress to the approved relay,
+  configure SPF/DKIM/DMARC and provider rate limits, and monitor failures and
+  bounces. This application does not claim delivery success until the SMTP
+  server accepts the message.
 
 ## Deployment requirements
 
@@ -235,7 +245,8 @@ remain authoritative for release.
   conventional current-working-directory lookup for `config.json` and `.env`.
 - Impact: a service account whose working directory is writable by another
   principal could be tricked into loading an attacker-controlled administrator,
-  SMTP, or static-directory configuration.
+  database, or static-directory configuration. SMTP relay fields are no longer
+  loaded from deployment files.
 - Required mitigation: production units should set absolute
   `CGU_CONFIG_FILE` / `CGU_ENV_FILE` paths in a protected directory, restrict
   ownership and permissions, and set `CGU_STATIC_DIR` to the dedicated `web/`

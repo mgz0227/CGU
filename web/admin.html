@@ -27,11 +27,12 @@
           <a href="#admin-announcements" data-admin-nav="announcements" data-i18n="admin.announcements">公告管理</a>
           <a href="#admin-admissions" data-admin-nav="admissions" data-i18n="admin.admissions">招生申请</a>
           <a href="#admin-mailbox" data-admin-nav="mailbox" data-i18n="admin.mailbox">校内邮箱</a>
+          <a href="#admin-smtp" data-admin-nav="smtp" data-i18n="admin.smtp">SMTP 外发</a>
           <a href="#admin-site-content" data-admin-nav="site-content" data-i18n="admin.siteContent">网站内容</a>
         </nav>
         <div class="portal-header-actions"><button class="portal-language" type="button" data-locale-toggle>English</button><span class="portal-user-chip" data-user-name>—</span><button class="portal-icon-button mobile-nav-toggle" type="button" aria-expanded="false" aria-controls="admin-mobile-nav" data-mobile-nav-toggle aria-label="打开菜单" data-i18n-attr="aria-label:nav.menu">☰</button><button class="portal-logout" type="button" data-logout data-i18n="nav.logout">退出登录</button></div>
       </div>
-      <nav class="portal-mobile-nav" id="admin-mobile-nav" aria-label="移动端导航" data-i18n-attr="aria-label:common.mobileNav" aria-hidden="true"><a href="#admin-overview" data-admin-nav="overview" data-i18n="admin.overview">总览</a><a href="#admin-notifications" data-admin-nav="notifications"><span data-i18n="admin.notifications">通知中心</span> <span class="nav-count" data-admin-notification-count hidden>0</span></a><a href="#admin-courses" data-admin-nav="courses" data-i18n="admin.courses">课程管理</a><a href="#admin-students" data-admin-nav="students" data-i18n="admin.students">学生目录</a><a href="#admin-academic" data-admin-nav="academic" data-i18n="admin.academic">成绩与课表</a><a href="#admin-announcements" data-admin-nav="announcements" data-i18n="admin.announcements">公告管理</a><a href="#admin-admissions" data-admin-nav="admissions" data-i18n="admin.admissions">招生申请</a><a href="#admin-mailbox" data-admin-nav="mailbox" data-i18n="admin.mailbox">校内邮箱</a><a href="#admin-site-content" data-admin-nav="site-content" data-i18n="admin.siteContent">网站内容</a></nav>
+      <nav class="portal-mobile-nav" id="admin-mobile-nav" aria-label="移动端导航" data-i18n-attr="aria-label:common.mobileNav" aria-hidden="true"><a href="#admin-overview" data-admin-nav="overview" data-i18n="admin.overview">总览</a><a href="#admin-notifications" data-admin-nav="notifications"><span data-i18n="admin.notifications">通知中心</span> <span class="nav-count" data-admin-notification-count hidden>0</span></a><a href="#admin-courses" data-admin-nav="courses" data-i18n="admin.courses">课程管理</a><a href="#admin-students" data-admin-nav="students" data-i18n="admin.students">学生目录</a><a href="#admin-academic" data-admin-nav="academic" data-i18n="admin.academic">成绩与课表</a><a href="#admin-announcements" data-admin-nav="announcements" data-i18n="admin.announcements">公告管理</a><a href="#admin-admissions" data-admin-nav="admissions" data-i18n="admin.admissions">招生申请</a><a href="#admin-mailbox" data-admin-nav="mailbox" data-i18n="admin.mailbox">校内邮箱</a><a href="#admin-smtp" data-admin-nav="smtp" data-i18n="admin.smtp">SMTP 外发</a><a href="#admin-site-content" data-admin-nav="site-content" data-i18n="admin.siteContent">网站内容</a></nav>
     </header>
 
     <main id="admin-main" class="portal-main portal-container">
@@ -73,6 +74,39 @@
         <div class="admin-record-grid mailbox-admin-grid">
           <div class="admin-record-panel"><div class="section-heading-inline"><div><h3 data-i18n="admin.composeMessage">撰写邮件</h3></div></div><form class="portal-form admin-form" data-mailbox-form novalidate><div class="form-grid"><label><span data-i18n="admin.recipient">收件学生</span><select name="studentId" required data-admin-mailbox-student-options></select></label><label><span data-i18n="admin.subject">主题</span><input name="subject" maxlength="200" required></label></div><label><span data-i18n="admin.messageBody">正文</span><textarea name="body" rows="8" maxlength="10000" required></textarea></label><label class="checkbox-field"><input name="external" type="checkbox" value="true"><span><strong data-i18n="admin.externalDelivery">同时发送到联系邮箱</strong><small data-i18n="admin.externalDeliveryHelp">需要在服务端配置 SMTP；校内邮箱记录仍会保留。</small></span></label><div class="form-actions"><button class="portal-button portal-button-gold" type="submit" data-i18n="admin.sendMessage">发送邮件</button></div></form></div>
           <div class="admin-record-panel"><div class="section-heading-inline"><div><h3 data-i18n="admin.sentMessages">发送记录</h3></div><span class="section-count" data-admin-mailbox-count>—</span></div><div class="mailbox-list admin-mailbox-list" data-admin-mailbox-list><p class="empty-state" data-i18n="common.loading">加载中…</p></div></div>
+        </div>
+      </section>
+
+      <section class="portal-section" id="admin-smtp" data-admin-section="smtp">
+        <div class="section-heading-inline">
+          <div><p class="portal-kicker" data-i18n="admin.smtpKicker">OUTBOUND MAIL</p><h2 data-i18n="admin.smtp">SMTP 外发</h2></div>
+          <span class="status-pill smtp-status" data-smtp-status role="status">不可用</span>
+        </div>
+        <p class="admin-section-help" data-i18n="admin.smtpHelp">在后台保存外发邮件服务设置。SMTP 密码只写入服务端，读取设置时不会回显。</p>
+        <div class="admin-editor smtp-editor">
+          <form class="portal-form admin-form smtp-form" data-smtp-form novalidate>
+            <div class="form-grid">
+              <label class="checkbox-field"><input name="enabled" type="checkbox" value="true"><span><strong data-i18n="admin.smtpEnabled">启用 SMTP 外发</strong><small data-i18n="admin.smtpEnabledHelp">启用后，招生和教务邮件会尝试发送到外部收件地址。</small></span></label>
+              <label><span data-i18n="admin.smtpHost">SMTP 主机</span><input name="host" maxlength="253" autocomplete="off" spellcheck="false" placeholder="smtp.example.com" data-i18n-attr="placeholder:admin.smtpHostPlaceholder"></label>
+              <label><span data-i18n="admin.smtpPort">端口</span><input name="port" type="number" min="1" max="65535" step="1" inputmode="numeric"></label>
+              <label><span data-i18n="admin.smtpUsername">用户名</span><input name="username" maxlength="254" autocomplete="off" spellcheck="false"></label>
+              <label><span data-i18n="admin.smtpPassword">密码</span><input name="password" type="password" maxlength="512" autocomplete="new-password" data-i18n-attr="placeholder:admin.smtpPasswordPlaceholder"></label>
+              <label><span data-i18n="admin.smtpFrom">发件地址</span><input name="from" type="email" maxlength="254" autocomplete="off" spellcheck="false" placeholder="no-reply@example.com" data-i18n-attr="placeholder:admin.smtpFromPlaceholder"></label>
+              <label><span data-i18n="admin.smtpFromName">发件人名称</span><input name="fromName" maxlength="200"></label>
+              <label><span data-i18n="admin.smtpAuth">认证方式</span><select name="auth"><option value="auto" data-i18n="admin.smtpAuthAuto">自动</option><option value="plain" data-i18n="admin.smtpAuthPlain">PLAIN</option><option value="login" data-i18n="admin.smtpAuthLogin">LOGIN</option><option value="cram-md5" data-i18n="admin.smtpAuthCram">CRAM-MD5</option><option value="scram-sha-256" data-i18n="admin.smtpAuthScram">SCRAM-SHA-256</option><option value="xoauth2" data-i18n="admin.smtpAuthXOauth2">XOAUTH2</option><option value="none" data-i18n="admin.smtpAuthNone">无认证</option></select></label>
+              <label><span data-i18n="admin.smtpTLS">TLS 模式</span><select name="tlsMode"><option value="starttls" data-i18n="admin.smtpTLSStartTLS">STARTTLS（推荐）</option><option value="ssl" data-i18n="admin.smtpTLSSSL">隐式 TLS</option><option value="none" data-i18n="admin.smtpTLSNone">不加密</option></select></label>
+              <label><span data-i18n="admin.smtpHELO">HELO 名称</span><input name="helo" maxlength="253" autocomplete="off" spellcheck="false" placeholder="留空使用服务器名称" data-i18n-attr="placeholder:admin.smtpHELOPlaceholder"></label>
+              <label><span data-i18n="admin.smtpTimeout">超时（秒）</span><input name="timeoutSecond" type="number" min="1" max="300" step="1" inputmode="numeric"></label>
+              <label class="checkbox-field"><input name="allowInsecure" type="checkbox" value="true"><span><strong data-i18n="admin.smtpAllowInsecure">允许不加密连接</strong><small data-i18n="admin.smtpAllowInsecureHelp">仅用于受控内网测试；生产环境应保持关闭。</small></span></label>
+            </div>
+            <p class="smtp-password-note" data-smtp-password-status role="status">密码尚未配置。</p>
+            <div class="form-actions smtp-actions"><button class="portal-button portal-button-gold" type="submit"><span data-i18n="admin.smtpSave">保存 SMTP 设置</span><span aria-hidden="true">→</span></button><button class="portal-button portal-button-outline" type="button" data-smtp-reset><span data-i18n="admin.smtpReset">放弃修改</span></button></div>
+          </form>
+          <div class="smtp-test-panel">
+            <div><p class="portal-kicker" data-i18n="admin.smtpTestKicker">DELIVERY CHECK</p><h3 data-i18n="admin.smtpTestTitle">发送测试邮件</h3><p class="admin-section-help" data-i18n="admin.smtpTestHelp">测试当前已保存的 SMTP 设置；请使用你有权限接收的地址。</p></div>
+            <div class="smtp-test-controls"><label><span data-i18n="admin.smtpTestRecipient">测试收件人</span><input type="email" name="smtpTestRecipient" data-smtp-test-recipient maxlength="254" autocomplete="email" placeholder="recipient@example.com" data-i18n-attr="placeholder:admin.smtpTestRecipientPlaceholder"></label><button class="portal-button portal-button-outline" type="button" data-smtp-test><span data-i18n="admin.smtpTest">发送测试</span><span aria-hidden="true">↗</span></button></div>
+            <p class="smtp-test-result" data-smtp-test-result role="status" aria-live="polite"></p>
+          </div>
         </div>
       </section>
 

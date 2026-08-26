@@ -14,7 +14,6 @@ import (
 type AppConfig struct {
 	Server             ServerConfig   `json:"server"`
 	Database           DatabaseConfig `json:"database"`
-	SMTP               SMTPConfig     `json:"smtp"`
 	StaticDir          string         `json:"staticDir"`
 	CookieSecure       bool           `json:"cookieSecure"`
 	PublicOrigin       string         `json:"publicOrigin"`
@@ -44,28 +43,10 @@ type DatabaseConfig struct {
 	MaxIdleConns        int    `json:"maxIdleConns"`
 }
 
-// SMTPConfig controls optional real-mail delivery. Internal mailbox storage is
-// always available; SMTP is enabled explicitly and defaults to mandatory TLS.
-type SMTPConfig struct {
-	Enabled       bool   `json:"enabled"`
-	Host          string `json:"host"`
-	Port          int    `json:"port"`
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	From          string `json:"from"`
-	FromName      string `json:"fromName"`
-	Auth          string `json:"auth"`
-	TLSMode       string `json:"tlsMode"`
-	HELO          string `json:"helo"`
-	TimeoutSecond int    `json:"timeoutSecond"`
-	AllowInsecure bool   `json:"allowInsecure"`
-}
-
 func defaultConfig() AppConfig {
 	return AppConfig{
 		Server:             ServerConfig{Address: "127.0.0.1:8000", Host: "127.0.0.1", Port: 8000},
 		Database:           DatabaseConfig{Driver: "mysql", Host: "127.0.0.1", Port: 3306, Name: "cgu", MaxOpenConns: 10, MaxIdleConns: 5},
-		SMTP:               SMTPConfig{Port: 587, Auth: "auto", TLSMode: "starttls", TimeoutSecond: 15},
 		StaticDir:          "web",
 		AdminUsername:      "admin",
 		StudentEmailDomain: "cgu.edu.kg",
@@ -155,30 +136,6 @@ func LoadConfig() AppConfig {
 	}
 	if cfg.Database.Port <= 0 {
 		cfg.Database.Port = 3306
-	}
-	cfg.SMTP.Enabled = envBool(fileEnv, "CGU_SMTP_ENABLED", cfg.SMTP.Enabled)
-	cfg.SMTP.Host = envString(fileEnv, "CGU_SMTP_HOST", cfg.SMTP.Host)
-	cfg.SMTP.Port = envInt(fileEnv, "CGU_SMTP_PORT", cfg.SMTP.Port)
-	cfg.SMTP.Username = envString(fileEnv, "CGU_SMTP_USERNAME", cfg.SMTP.Username)
-	cfg.SMTP.Password = envString(fileEnv, "CGU_SMTP_PASSWORD", cfg.SMTP.Password)
-	cfg.SMTP.From = envString(fileEnv, "CGU_SMTP_FROM", cfg.SMTP.From)
-	cfg.SMTP.FromName = envString(fileEnv, "CGU_SMTP_FROM_NAME", cfg.SMTP.FromName)
-	cfg.SMTP.Auth = envString(fileEnv, "CGU_SMTP_AUTH", cfg.SMTP.Auth)
-	cfg.SMTP.TLSMode = envString(fileEnv, "CGU_SMTP_TLS_MODE", cfg.SMTP.TLSMode)
-	cfg.SMTP.HELO = envString(fileEnv, "CGU_SMTP_HELO", cfg.SMTP.HELO)
-	cfg.SMTP.TimeoutSecond = envInt(fileEnv, "CGU_SMTP_TIMEOUT_SECONDS", cfg.SMTP.TimeoutSecond)
-	cfg.SMTP.AllowInsecure = envBool(fileEnv, "CGU_SMTP_ALLOW_INSECURE", cfg.SMTP.AllowInsecure)
-	if cfg.SMTP.Port <= 0 {
-		cfg.SMTP.Port = 587
-	}
-	if cfg.SMTP.TimeoutSecond <= 0 {
-		cfg.SMTP.TimeoutSecond = 15
-	}
-	if strings.TrimSpace(cfg.SMTP.Auth) == "" {
-		cfg.SMTP.Auth = "auto"
-	}
-	if strings.TrimSpace(cfg.SMTP.TLSMode) == "" {
-		cfg.SMTP.TLSMode = "starttls"
 	}
 	return cfg
 }

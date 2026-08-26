@@ -504,7 +504,8 @@ func safeExternalDeliveryError(err error) string {
 }
 
 func (s *Server) deliverMailboxExternally(ctx context.Context, item *MailboxMessage) (status, deliveryError, deliveredAt string) {
-	if s.mailer == nil {
+	sender, timeout := s.smtpSender()
+	if sender == nil {
 		return mailboxDeliveryNotConfigured, "SMTP is not configured", ""
 	}
 	if s.smtpSlots != nil {
@@ -515,12 +516,8 @@ func (s *Server) deliverMailboxExternally(ctx context.Context, item *MailboxMess
 			return mailboxDeliveryFailed, "SMTP delivery is temporarily busy; retry later", ""
 		}
 	}
-	timeout := s.smtpTimeout
-	if timeout <= 0 {
-		timeout = mailboxExternalSendTimeout
-	}
 	sendContext, cancel := context.WithTimeout(ctx, timeout)
-	err := s.mailer.Send(sendContext, item.ExternalRecipient, item.Subject, item.Body)
+	err := sender.Send(sendContext, item.ExternalRecipient, item.Subject, item.Body)
 	cancel()
 	if err == nil {
 		return mailboxDeliverySent, "", time.Now().UTC().Format(time.RFC3339)
