@@ -262,7 +262,7 @@ body.portal-shell.login-page .login-layout { display: grid; grid-template-column
 .admin-admission-row.is-approved { background: rgba(150, 184, 158, .08); }
 .admin-announcement-row > * { min-width: 0; }
 .admin-admission-row > * { min-width: 0; }
-.admin-announcement-row h3 { margin: 0 0 3px; font-family: Georgia, serif; font-size: 17px; font-weight: 400; }
+.admin-announcement-row h3, .admin-admission-row h3 { margin: 0 0 3px; font-family: Georgia, serif; font-size: 17px; font-weight: 400; }
 .admin-announcement-row p { margin: 0; overflow: hidden; color: var(--portal-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .admin-admission-row p { margin: 0; overflow: hidden; color: var(--portal-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .admission-provisioned { display: block; margin-top: 7px; color: var(--portal-muted); font-size: 11px; }
