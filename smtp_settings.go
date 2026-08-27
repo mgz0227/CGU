@@ -214,6 +214,11 @@ func (s *Server) adminSMTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, apiErr(http.StatusBadRequest, "invalid_input", "SMTP settings are required"))
 			return
 		}
+		// Serialize settings changes with admission approval and credential
+		// resend. This prevents a rotation from passing an availability check,
+		// then losing its delivery path while the new hash is being committed.
+		s.admissionDeliveryMu.Lock()
+		defer s.admissionDeliveryMu.Unlock()
 		view, apiError := s.store.saveSMTPSettings(input)
 		if apiError != nil {
 			writeError(w, apiError)

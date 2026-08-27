@@ -236,7 +236,7 @@ func TestAdmissionsApplicationFlow(t *testing.T) {
 	client := &http.Client{Jar: jar}
 
 	created := postJSON(t, client, server.URL+"/api/admissions", map[string]string{
-		"name": "璃月旅行者", "email": "traveler@example.com", "school": "契约与商业文明", "status": "accepted", "notes": "伪造的内部备注",
+		"name": "璃月旅行者", "englishName": "Liyue Traveler", "email": "traveler@example.com", "school": "契约与商业文明", "status": "accepted", "notes": "伪造的内部备注",
 	})
 	if created.StatusCode != http.StatusCreated {
 		t.Fatalf("admission create status = %d", created.StatusCode)
@@ -372,7 +372,7 @@ func TestAdmissionRateLimit(t *testing.T) {
 	client := &http.Client{}
 	for attempt := 0; attempt < admissionMax; attempt++ {
 		response := postJSON(t, client, server.URL+"/api/admissions", map[string]string{
-			"name": "申请人", "email": "rate@example.com", "school": "综合学院",
+			"name": "申请人", "englishName": "Rate Applicant", "email": "rate@example.com", "school": "综合学院",
 		})
 		if response.StatusCode != http.StatusCreated {
 			t.Fatalf("admission attempt %d status = %d", attempt+1, response.StatusCode)
@@ -380,7 +380,7 @@ func TestAdmissionRateLimit(t *testing.T) {
 		response.Body.Close()
 	}
 	response := postJSON(t, client, server.URL+"/api/admissions", map[string]string{
-		"name": "申请人", "email": "rate@example.com", "school": "综合学院",
+		"name": "申请人", "englishName": "Rate Applicant", "email": "rate@example.com", "school": "综合学院",
 	})
 	if response.StatusCode != http.StatusTooManyRequests || response.Header.Get("Retry-After") == "" {
 		t.Fatalf("admission rate limit status = %d, retry-after = %q", response.StatusCode, response.Header.Get("Retry-After"))
@@ -573,11 +573,11 @@ func TestStaticRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.HasSuffix(route, "/") && !strings.Contains(string(body), `assets/v1.5.7`) && !strings.Contains(string(body), `href="/portal.css"`) && !strings.Contains(string(body), `href="/styles.css"`) {
+		if strings.HasSuffix(route, "/") && !strings.Contains(string(body), `assets/v1.5.8`) && !strings.Contains(string(body), `href="/portal.css"`) && !strings.Contains(string(body), `href="/styles.css"`) {
 			t.Fatalf("slash route %s did not use root-relative assets", route)
 		}
 	}
-	versionedAsset, err := http.Get(server.URL + "/assets/v1.5.7/portal.js")
+	versionedAsset, err := http.Get(server.URL + "/assets/v1.5.8/portal.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -830,7 +830,7 @@ func TestLegacyAcceptedAdmissionCanBeEditedBeforeProvisioning(t *testing.T) {
 	updated, apiError := store.updateAdmission(application.ID, AdmissionApplicationInput{
 		Name: "修正申请人", Email: "corrected@example.com", School: "至冬学院", Notes: "待补充材料",
 	})
-	if apiError != nil || updated == nil || updated.Name != "修正申请人" || updated.Email != "corrected@example.com" || updated.School != "至冬学院" || updated.Notes != "待补充材料" {
+	if apiError != nil || updated == nil || updated.Name != "修正申请人" || updated.Email != "corrected@example.com" || updated.School != "至冬研究与极地治理" || updated.Notes != "待补充材料" {
 		t.Fatalf("legacy accepted admission update = %#v, error=%#v", updated, apiError)
 	}
 }
@@ -929,6 +929,61 @@ func TestDisabledStudentCannotAuthenticateAndSessionsAreRevoked(t *testing.T) {
 		t.Fatalf("re-enabled student login status = %d", loginAgain.StatusCode)
 	}
 	loginAgain.Body.Close()
+}
+
+func TestAdminPasswordResetRevokesExistingStudentSessions(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	student, apiError := store.createStudent(StudentInput{
+		Username: "password-reset-student", Name: "密码重置学生", Email: "password-reset@example.com",
+		StudentID: "CGU-PASSWORD-RESET", Password: "old-password-reset-2026!",
+	})
+	if apiError != nil || student == nil {
+		t.Fatalf("create password reset student = %#v, error = %#v", student, apiError)
+	}
+	server := httptest.NewServer(NewServer(store, "web"))
+	defer server.Close()
+	studentJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	studentClient := &http.Client{Jar: studentJar}
+	login := postJSON(t, studentClient, server.URL+"/api/auth/login", map[string]string{
+		"username": student.Username, "password": "old-password-reset-2026!",
+	})
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("student login status = %d", login.StatusCode)
+	}
+	login.Body.Close()
+
+	adminJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminClient := &http.Client{Jar: adminJar}
+	adminLogin := postJSON(t, adminClient, server.URL+"/api/auth/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	})
+	if adminLogin.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", adminLogin.StatusCode)
+	}
+	adminLogin.Body.Close()
+	updated := doJSON(t, adminClient, http.MethodPatch, server.URL+"/api/admin/students/"+url.PathEscape(student.ID), map[string]string{
+		"password": "new-password-reset-2026!",
+	})
+	if updated.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(updated.Body)
+		updated.Body.Close()
+		t.Fatalf("student password reset status = %d body=%s", updated.StatusCode, raw)
+	}
+	updated.Body.Close()
+	me, err := studentClient.Get(server.URL + "/api/auth/me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if me.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("student session after administrator password reset status = %d", me.StatusCode)
+	}
+	me.Body.Close()
 }
 
 func TestLoopbackListenerDetection(t *testing.T) {
@@ -1243,6 +1298,80 @@ func TestStudentPasswordRotationRevokesOtherSessions(t *testing.T) {
 	newLogin.Body.Close()
 }
 
+func TestAdminStudentPasswordUpdateRevokesAllStudentSessions(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	student, apiError := store.createStudent(StudentInput{
+		Username: "admin-reset-student", Name: "管理员重置测试", StudentID: "CGU-ADMIN-RESET-001",
+		Password: "old-admin-reset-password-2026!",
+	})
+	if apiError != nil || student == nil {
+		t.Fatalf("student create = %#v, error = %#v", student, apiError)
+	}
+	server := httptest.NewServer(NewServer(store, "web"))
+	defer server.Close()
+	studentClients := make([]*http.Client, 0, 2)
+	for range 2 {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := &http.Client{Jar: jar}
+		login := postJSON(t, client, server.URL+"/api/auth/login", map[string]string{
+			"username": student.Username, "password": "old-admin-reset-password-2026!",
+		})
+		if login.StatusCode != http.StatusOK {
+			t.Fatalf("student login status = %d", login.StatusCode)
+		}
+		login.Body.Close()
+		studentClients = append(studentClients, client)
+	}
+	adminJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminClient := &http.Client{Jar: adminJar}
+	adminLogin := postJSON(t, adminClient, server.URL+"/api/auth/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	})
+	if adminLogin.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", adminLogin.StatusCode)
+	}
+	adminLogin.Body.Close()
+	updated := doJSON(t, adminClient, http.MethodPatch, server.URL+"/api/admin/students/"+student.ID, map[string]string{
+		"password": "new-admin-reset-password-2026!",
+	})
+	if updated.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(updated.Body)
+		updated.Body.Close()
+		t.Fatalf("admin password update status = %d body = %s", updated.StatusCode, raw)
+	}
+	updated.Body.Close()
+	for index, client := range studentClients {
+		me, err := client.Get(server.URL + "/api/auth/me")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if me.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("student session %d after admin reset status = %d", index, me.StatusCode)
+		}
+		me.Body.Close()
+	}
+	oldLogin := postJSON(t, &http.Client{}, server.URL+"/api/auth/login", map[string]string{
+		"username": student.Username, "password": "old-admin-reset-password-2026!",
+	})
+	if oldLogin.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old password login status = %d", oldLogin.StatusCode)
+	}
+	oldLogin.Body.Close()
+	newLogin := postJSON(t, &http.Client{}, server.URL+"/api/auth/login", map[string]string{
+		"username": student.Username, "password": "new-admin-reset-password-2026!",
+	})
+	if newLogin.StatusCode != http.StatusOK {
+		t.Fatalf("new password login status = %d", newLogin.StatusCode)
+	}
+	newLogin.Body.Close()
+}
+
 func TestApprovedStudentIdentityCannotBeChanged(t *testing.T) {
 	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
 	application, apiError := store.createAdmission(AdmissionApplicationInput{
@@ -1276,7 +1405,7 @@ func TestAdmissionDeleteRequiresAdminCSRFAndRemovesPendingApplication(t *testing
 	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
 	server := httptest.NewServer(NewServer(store, "web"))
 	defer server.Close()
-	created := postJSON(t, &http.Client{}, server.URL+"/api/admissions", map[string]string{"name": "待删除申请", "email": "delete@example.com", "school": "综合学院"})
+	created := postJSON(t, &http.Client{}, server.URL+"/api/admissions", map[string]string{"name": "待删除申请", "englishName": "Pending Delete", "email": "delete@example.com", "school": "综合学院"})
 	if created.StatusCode != http.StatusCreated {
 		t.Fatalf("admission create status = %d", created.StatusCode)
 	}

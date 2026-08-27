@@ -22,7 +22,7 @@ func TestAdminAdmissionNotificationFlow(t *testing.T) {
 
 	publicClient := &http.Client{}
 	created := postJSON(t, publicClient, server.URL+"/api/admissions", map[string]string{
-		"name": "至冬申请人", "email": "snezhnaya@example.com", "school": "至冬与极地研究学院",
+		"name": "至冬申请人", "englishName": "Snezhnaya Applicant", "email": "snezhnaya@example.com", "school": "至冬与极地研究学院",
 	})
 	if created.StatusCode != http.StatusCreated {
 		t.Fatalf("public admission status = %d", created.StatusCode)
@@ -130,14 +130,14 @@ func TestAdmissionAndAdminNotificationPersistAtomically(t *testing.T) {
 	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
 	store.db = db
 	mock.ExpectBegin()
-	admissionExec := mock.ExpectExec(regexp.QuoteMeta("INSERT INTO cgu_admissions (id, name_text, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"))
-	admissionExec.WithArgs(sqlmock.AnyArg(), "事务申请人", "atomic@example.com", "综合学院", "pending", "", sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	admissionExec := mock.ExpectExec(regexp.QuoteMeta("INSERT INTO cgu_admissions (id, name_text, english_name, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"))
+	admissionExec.WithArgs(sqlmock.AnyArg(), "事务申请人", "Atomic Applicant", "atomic@example.com", "综合学院", "pending", "", sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
 	notificationExec := mock.ExpectExec(regexp.QuoteMeta("INSERT INTO cgu_admin_notifications (id, recipient_id, type_name, title_zh, title_en, body_zh, body_en, reference_id, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"))
 	notificationExec.WillReturnError(sql.ErrNoRows)
 	mock.ExpectRollback()
 
 	item, apiError := store.createAdmission(AdmissionApplicationInput{
-		Name: "事务申请人", Email: "atomic@example.com", School: "综合学院",
+		Name: "事务申请人", EnglishName: "Atomic Applicant", Email: "atomic@example.com", School: "综合学院",
 	})
 	if item != nil || apiError == nil || apiError.Status != http.StatusServiceUnavailable {
 		t.Fatalf("atomic admission result = %#v, error = %#v", item, apiError)

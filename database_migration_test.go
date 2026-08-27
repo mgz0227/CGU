@@ -65,6 +65,7 @@ func TestEnsureAdmissionApprovalColumnsToleratesConcurrentDDL(t *testing.T) {
 		name string
 		def  string
 	}{
+		{name: "english_name", def: "VARCHAR(120) NOT NULL DEFAULT ''"},
 		{name: "student_id", def: "VARCHAR(128) NOT NULL DEFAULT ''"},
 		{name: "approved_at", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
 		{name: "approved_by", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
@@ -192,5 +193,35 @@ func TestIsDuplicateSchemaObjectRejectsOtherMySQLErrors(t *testing.T) {
 	}
 	if isDuplicateSchemaObject(&mysql.MySQLError{Number: 1045}) {
 		t.Fatal("unrelated MySQL error was ignored")
+	}
+}
+
+func TestEnsureDeletionIndexesToleratesConcurrentDDL(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	indexQuery := regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`)
+	indexes := []struct {
+		table string
+		name  string
+		def   string
+	}{
+		{table: "cgu_users", name: "idx_user_student_id", def: "ALTER TABLE cgu_users ADD INDEX idx_user_student_id (student_id)"},
+		{table: "cgu_admin_notifications", name: "idx_admin_notification_reference", def: "ALTER TABLE cgu_admin_notifications ADD INDEX idx_admin_notification_reference (reference_id)"},
+	}
+	for _, index := range indexes {
+		mock.ExpectQuery(indexQuery).WithArgs(index.table, index.name).
+			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+		mock.ExpectExec(regexp.QuoteMeta(index.def)).
+			WillReturnError(&mysql.MySQLError{Number: 1061, Message: "Duplicate key name"})
+	}
+	if err := ensureDeletionIndexes(context.Background(), db); err != nil {
+		t.Fatalf("concurrent deletion index migration should be idempotent: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }

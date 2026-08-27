@@ -333,15 +333,29 @@ func (s *Store) updateMailboxDelivery(id, attemptStartedAt, status, deliveryErro
 }
 
 func (s *Store) beginMailboxDelivery(id string) (*MailboxMessage, *apiError) {
-	return s.beginMailboxDeliveryWithConfirmation(id, false)
+	return s.beginMailboxDeliveryWithConfirmationMode(id, false, true)
 }
 
 func (s *Store) beginMailboxDeliveryWithConfirmation(id string, confirmUnknown bool) (*MailboxMessage, *apiError) {
+	// This is the generic administrator retry entry point. Admission onboarding
+	// messages must use the dedicated credential resend workflow instead.
+	return s.beginMailboxDeliveryWithConfirmationMode(id, confirmUnknown, false)
+}
+
+// beginMailboxDeliveryWithConfirmationMode claims an SMTP delivery after all
+// workflow-specific checks. Admission onboarding messages carry a one-time
+// credential workflow and must never be retried through the generic mailbox
+// endpoint: that path has no fresh password to deliver and can target a stale
+// contact address. The approval/resend workflow opts in explicitly.
+func (s *Store) beginMailboxDeliveryWithConfirmationMode(id string, confirmUnknown, allowAdmissionOnboarding bool) (*MailboxMessage, *apiError) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, item := range s.mailbox {
 		if item == nil || !strings.EqualFold(item.ID, strings.TrimSpace(id)) {
 			continue
+		}
+		if !allowAdmissionOnboarding && isAdmissionOnboardingMailbox(item) {
+			return nil, apiErr(http.StatusConflict, "admission_credentials_resend_required", "use the dedicated admission credential resend action for this message")
 		}
 		if item.DeliveryMode != mailboxDeliveryModeSMTP {
 			return nil, apiErr(http.StatusBadRequest, "external_delivery_not_requested", "external delivery was not requested for this message")
@@ -409,6 +423,13 @@ func mailboxDeliveryLeaseExpired(startedAt string) bool {
 	}
 	value, err := time.Parse(time.RFC3339Nano, startedAt)
 	return err != nil || time.Since(value) > mailboxDeliveryLease
+}
+
+func isAdmissionOnboardingMailbox(item *MailboxMessage) bool {
+	if item == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(item.RequestKey)), "admission-approval:")
 }
 
 func (s *Store) refreshMailboxDeliveryLocked(item *MailboxMessage) error {

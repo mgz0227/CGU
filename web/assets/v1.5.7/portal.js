@@ -52,6 +52,7 @@
     adminSMTPAvailable: false,
     adminSMTPTestResult: null,
     adminLoading: false,
+    adminRefreshQueued: false,
     // Ignore an older all-sections response that started before an editor
     // mutation completed. Without this guard a slow refresh could put a newly
     // approved admission back into the visible pending list.
@@ -79,11 +80,14 @@
       schedule_overlap: 'admin.scheduleOverlap',
       course_full: 'portal.courseFull',
       student_exists: 'admin.studentExists',
-      admission_already_approved: 'admin.admissionDeleteBlocked',
+      student_id_ambiguous: 'admin.studentIDAmbiguous',
+      student_identity_mismatch: 'admin.studentIdentityMismatch',
+      admission_credentials_resend_required: 'admin.admissionCredentialsResendRequired',
+      external_recipient_invalid: 'admin.admissionCredentialsEmailInvalid',
+      smtp_not_configured: 'admin.admissionCredentialsSMTPRequired',
       invalid_smtp_settings: 'admin.smtpInvalidSettings',
       smtp_settings_unavailable: 'admin.smtpUnavailable',
       smtp_requires_mysql: 'admin.smtpRequiresMySQL',
-      smtp_not_configured: 'admin.smtpDisabled',
       invalid_recipient: 'admin.smtpTestRecipientRequired',
       smtp_test_failed: 'admin.smtpTestFailed',
       smtp_test_busy: 'admin.smtpTestBusy'
@@ -298,10 +302,15 @@
     updatedAt: value.updatedAt ?? value.updated_at ?? ''
   });
 
-  const normalizeAdmission = (value = {}) => ({
-    ...value,
+  const normalizeAdmission = (value = {}) => {
+    // Do not carry legacy credential projections forward in client state. A
+    // stale bundle may still have cached them in local memory during a reload.
+    const { issuedCredentials, credentials, initialPassword, ...safeValue } = value || {};
+    return {
+    ...safeValue,
     id: value.id ?? value.applicationId ?? value.application_id ?? '',
     name: String(value.name ?? value.applicantName ?? '').trim(),
+    englishName: String(value.englishName ?? value.english_name ?? '').trim(),
     email: String(value.email ?? '').trim(),
     school: String(value.school ?? value.program ?? '').trim(),
     status: String(value.status ?? 'pending').toLowerCase(),
@@ -313,7 +322,8 @@
     issuedAt: value.issuedAt ?? value.issued_at ?? '',
     deliveryStatus: String(value.deliveryStatus ?? value.delivery_status ?? '').trim(),
     deliveryError: String(value.deliveryError ?? value.delivery_error ?? '').trim()
-  });
+    };
+  };
 
   const normalizeAdminStudent = (value = {}) => ({
     ...value,
@@ -932,6 +942,24 @@
   const adminCourseLabel = (item) => item ? `${item.code || item.id || notAvailable()} · ${courseLabel(item)}` : notAvailable();
   const adminDayLabel = (day) => I18N.t(['portal.mon', 'portal.tue', 'portal.wed', 'portal.thu', 'portal.fri', 'portal.sat', 'portal.sun'][Math.max(1, Math.min(7, Number(day) || 1)) - 1]);
 
+  // Keep all administrator projections coherent after a cascade deletion. The
+  // API performs the durable transaction; this optimistic update removes the
+  // same references immediately so a slow refresh cannot briefly show ghosts.
+  const removeStudentFromAdminState = (student, admissionIds = []) => {
+    const refs = new Set([student?.id, student?.studentId].filter(Boolean).map((value) => String(value).toLowerCase()));
+    const admissions = new Set((Array.isArray(admissionIds) ? admissionIds : []).filter(Boolean).map((value) => String(value).toLowerCase()));
+    if (!refs.size && !admissions.size) return;
+    const matches = (value) => refs.has(String(value ?? '').toLowerCase());
+    const admissionRequestKeys = new Set([...admissions].map((value) => `admission-approval:${value}`));
+    state.adminStudents = state.adminStudents.filter((value) => !matches(value.id) && !matches(value.studentId));
+    state.adminAdmissions = state.adminAdmissions.filter((value) => !admissions.has(String(value.id ?? '').toLowerCase()) && !matches(value.studentId));
+    state.adminGrades = state.adminGrades.filter((value) => !matches(value.studentId));
+    state.adminSchedule = state.adminSchedule.filter((value) => !matches(value.studentId));
+    state.adminMailbox = state.adminMailbox.filter((value) => !matches(value.recipientId) && !matches(value.recipientStudentId) && !admissionRequestKeys.has(String(value.requestKey ?? '').toLowerCase()));
+    state.adminNotifications = state.adminNotifications.filter((value) => !admissions.has(String(value.referenceId ?? '').toLowerCase()));
+    state.adminNotificationUnread = state.adminNotifications.filter((value) => !value.readAt).length;
+  };
+
   const renderAdminReferenceOptions = () => {
     const studentOptions = state.adminStudents.filter((item) => item.active).map((item) => `<option value="${escapeHTML(item.id)}">${escapeHTML(adminStudentLabel(item))}</option>`).join('');
     const courseOptions = state.adminCourses.map((item) => `<option value="${escapeHTML(item.id)}">${escapeHTML(adminCourseLabel(item))}</option>`).join('');
@@ -955,7 +983,7 @@
   const renderAdminStudents = () => {
     const list = document.querySelector('[data-admin-student-list]');
     if (!list) return;
-     list.innerHTML = state.adminStudents.length ? state.adminStudents.map((item) => `<tr class="${item.active ? '' : 'is-disabled'}"><td>${escapeHTML(item.studentId || notAvailable())}</td><td><span class="course-name">${escapeHTML(item.name || notAvailable())}</span></td><td>${escapeHTML(item.username || notAvailable())}</td><td>${escapeHTML(item.studentEmail || item.email || notAvailable())}</td><td>${escapeHTML(item.college || notAvailable())}</td><td>${escapeHTML(item.year || notAvailable())}</td><td><span class="status-pill${item.active ? '' : ' is-full'}">${escapeHTML(item.active ? I18N.t('admin.studentActive') : I18N.t('admin.studentDisabled'))}</span><button class="table-action" type="button" data-edit-student="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action${item.active ? ' is-danger' : ''}" type="button" data-toggle-student="${escapeHTML(item.id)}">${escapeHTML(I18N.t(item.active ? 'admin.studentDisable' : 'admin.studentEnable'))}</button></td></tr>`).join('') : `<tr><td colspan="7" class="empty-state">${escapeHTML(I18N.t('admin.noStudents'))}</td></tr>`;
+     list.innerHTML = state.adminStudents.length ? state.adminStudents.map((item) => `<tr class="${item.active ? '' : 'is-disabled'}"><td>${escapeHTML(item.studentId || notAvailable())}</td><td><span class="course-name">${escapeHTML(item.name || notAvailable())}</span></td><td>${escapeHTML(item.username || notAvailable())}</td><td>${escapeHTML(item.studentEmail || item.email || notAvailable())}</td><td>${escapeHTML(item.college || notAvailable())}</td><td>${escapeHTML(item.year || notAvailable())}</td><td><span class="status-pill${item.active ? '' : ' is-full'}">${escapeHTML(item.active ? I18N.t('admin.studentActive') : I18N.t('admin.studentDisabled'))}</span><button class="table-action" type="button" data-edit-student="${escapeHTML(item.id)}">${escapeHTML(I18N.t('admin.edit'))}</button><button class="table-action${item.active ? ' is-danger' : ''}" type="button" data-toggle-student="${escapeHTML(item.id)}">${escapeHTML(I18N.t(item.active ? 'admin.studentDisable' : 'admin.studentEnable'))}</button><button class="table-action is-danger" type="button" data-delete-student="${escapeHTML(item.id)}"><span data-i18n="admin.studentDelete">${escapeHTML(I18N.t('admin.studentDelete'))}</span></button></td></tr>`).join('') : `<tr><td colspan="7" class="empty-state">${escapeHTML(I18N.t('admin.noStudents'))}</td></tr>`;
   };
 
   const renderAdminAcademic = () => {
@@ -1011,19 +1039,18 @@
       const approved = status === 'accepted' && provisioned;
       const terminal = status === 'rejected' || status === 'withdrawn';
       const incomplete = status === 'accepted' && !provisioned;
-      const credentials = item.issuedCredentials || item.credentials;
-      const credentialPanel = credentials?.password ? `<div class="admission-credentials" role="status"><strong>${escapeHTML(I18N.t('admin.admissionCredentials'))}</strong><span>${escapeHTML(I18N.t('admin.admissionUsername'))}: ${escapeHTML(credentials.username || notAvailable())}</span><span>${escapeHTML(I18N.t('admin.admissionPassword'))}: <code>${escapeHTML(credentials.password)}</code></span><span>${escapeHTML(I18N.t('portal.studentEmail'))}: ${escapeHTML(credentials.studentEmail || credentials.email || notAvailable())}</span><button class="table-action" type="button" data-admission-copy-password="${escapeHTML(credentials.password)}">${escapeHTML(I18N.t('admin.admissionCopyPassword'))}</button></div>` : '';
       const deliveryStatus = item.deliveryStatus || '';
       const deliveryNotice = deliveryStatus === 'sent' ? I18N.t('admin.admissionEmailDelivery') : deliveryStatus === 'not_configured' ? I18N.t('admin.admissionEmailPending') : deliveryStatus === 'failed' ? I18N.t('admin.smtpFailed') : deliveryStatus === 'unknown' ? I18N.t('admin.smtpUnknown') : deliveryStatus ? I18N.t('admin.admissionEmailPending') : '';
       const deliveryDiagnostic = (deliveryStatus === 'failed' || deliveryStatus === 'unknown') && item.deliveryError ? ` ${escapeHTML(item.deliveryError)}` : '';
       const deliveryPanel = deliveryNotice ? `<small class="admission-provisioned">${escapeHTML(deliveryNotice)}${deliveryDiagnostic}</small>` : '';
       const identityLocked = provisioned;
-      const readonly = identityLocked ? ' readonly aria-readonly="true"' : '';
-      const profilePanel = `<div class="admission-profile-editor" data-admission-editor><div class="admission-profile-fields"><label><span>${escapeHTML(I18N.t('admin.admissionApplicant'))}</span><input data-admission-name type="text" maxlength="120" required value="${escapeHTML(item.name || '')}"${readonly}></label><label><span>${escapeHTML(I18N.t('admin.admissionApplicantEmail'))}</span><input data-admission-email type="email" maxlength="254" required value="${escapeHTML(item.email || '')}"${readonly}></label><label><span>${escapeHTML(I18N.t('admin.admissionApplicantSchool'))}</span><input data-admission-school type="text" maxlength="160" required value="${escapeHTML(item.school || '')}"${readonly}></label></div><label><span>${escapeHTML(I18N.t('admin.notes'))}</span><textarea data-admission-notes rows="2" maxlength="2000" placeholder="${escapeHTML(I18N.t('admin.notesPlaceholder'))}">${escapeHTML(item.notes || '')}</textarea></label><div class="admission-editor-actions"><button class="table-action" type="button" data-admission-save="${escapeHTML(item.id)}"><span data-i18n="admin.saveAdmission">${escapeHTML(I18N.t('admin.saveAdmission'))}</span></button>${identityLocked ? `<small class="admission-editor-lock">${escapeHTML(I18N.t('admin.admissionIdentityLocked'))}</small>` : ''}</div></div>`;
+      const identityReadonly = identityLocked ? ' readonly aria-readonly="true"' : '';
+      const profilePanel = `<details class="admission-profile-editor" data-admission-editor><summary>${escapeHTML(I18N.t('admin.admissionEditDetails'))}</summary><div class="admission-profile-fields"><label><span>${escapeHTML(I18N.t('admin.admissionApplicant'))}</span><input data-admission-name type="text" maxlength="120" required value="${escapeHTML(item.name || '')}"${identityReadonly}></label><label><span>${escapeHTML(I18N.t('admin.admissionApplicantEnglishName'))}</span><input data-admission-english-name type="text" maxlength="120" pattern="[A-Za-z][A-Za-z .'-]*" value="${escapeHTML(item.englishName || '')}"${identityReadonly}></label><label><span>${escapeHTML(I18N.t('admin.admissionApplicantEmail'))}</span><input data-admission-email type="email" maxlength="254" required value="${escapeHTML(item.email || '')}"></label><label><span>${escapeHTML(I18N.t('admin.admissionApplicantSchool'))}</span><input data-admission-school type="text" maxlength="160" required value="${escapeHTML(item.school || '')}"${identityReadonly}></label></div><label><span>${escapeHTML(I18N.t('admin.notes'))}</span><textarea data-admission-notes rows="2" maxlength="2000" placeholder="${escapeHTML(I18N.t('admin.notesPlaceholder'))}">${escapeHTML(item.notes || '')}</textarea></label><div class="admission-editor-actions"><button class="table-action" type="button" data-admission-save="${escapeHTML(item.id)}"><span data-i18n="admin.saveAdmission">${escapeHTML(I18N.t('admin.saveAdmission'))}</span></button>${identityLocked ? `<small class="admission-editor-lock">${escapeHTML(I18N.t('admin.admissionIdentityLocked'))}</small>` : ''}</div></details>`;
       const statusKey = incomplete ? 'admin.admissionIncomplete' : status === 'accepted' ? 'admin.admissionAccepted' : status === 'reviewing' ? 'admin.admissionReviewing' : status === 'contacted' ? 'admin.admissionContacted' : 'admin.admissionPending';
-      const deleteAction = !provisioned ? `<button class="table-action is-danger" type="button" data-admission-delete="${escapeHTML(item.id)}"><span data-i18n="admin.admissionDelete">${escapeHTML(I18N.t('admin.admissionDelete'))}</span></button>` : '';
-      const action = approved ? `<div class="admin-actions"><span class="status-pill">${escapeHTML(I18N.t('admin.admissionApproved'))}</span><small class="admin-announcement-meta">${escapeHTML(item.studentId || notAvailable())}</small></div>` : terminal ? `<div class="admin-actions"><span class="status-pill is-full">${escapeHTML(I18N.t(status === 'withdrawn' ? 'admin.admissionWithdrawn' : 'admin.admissionRejected'))}</span>${deleteAction}</div>` : `<div class="admin-actions"><span class="status-pill is-progress">${escapeHTML(I18N.t(statusKey))}</span><button class="portal-button portal-button-gold" type="button" data-admission-approve="${escapeHTML(item.id)}"><span>${escapeHTML(I18N.t(incomplete ? 'admin.admissionRepair' : 'admin.admissionApprove'))}</span><span aria-hidden="true">→</span></button>${deleteAction}</div>`;
-      return `<article class="admin-admission-row${approved ? ' is-approved' : terminal || incomplete ? ' is-closed' : ''}" data-admission-id="${escapeHTML(item.id)}"><div><span class="announcement-type">${escapeHTML(item.school || I18N.t('admin.admissionUndecided'))}</span><h3>${escapeHTML(item.name || notAvailable())}</h3><p><a href="mailto:${escapeHTML(item.email)}">${escapeHTML(item.email || notAvailable())}</a></p>${approved ? `<small class="admission-provisioned">${escapeHTML(I18N.t('admin.admissionProvisioned'))}</small>${deliveryPanel}` : ''}${credentialPanel}${profilePanel}</div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.createdAt, true))}</div>${action}</article>`;
+      const deleteAction = `<button class="table-action is-danger" type="button" data-admission-delete="${escapeHTML(item.id)}"><span data-i18n="admin.admissionDelete">${escapeHTML(I18N.t('admin.admissionDelete'))}</span></button>`;
+      const resendAction = `<button class="table-action" type="button" data-admission-resend="${escapeHTML(item.id)}"><span>${escapeHTML(I18N.t('admin.admissionResendCredentials'))}</span></button>`;
+      const action = approved ? `<div class="admin-actions"><span class="status-pill">${escapeHTML(I18N.t('admin.admissionApproved'))}</span><small class="admin-announcement-meta">${escapeHTML(item.studentId || notAvailable())}</small>${resendAction}${deleteAction}</div>` : terminal ? `<div class="admin-actions"><span class="status-pill is-full">${escapeHTML(I18N.t(status === 'withdrawn' ? 'admin.admissionWithdrawn' : 'admin.admissionRejected'))}</span>${deleteAction}</div>` : `<div class="admin-actions"><span class="status-pill is-progress">${escapeHTML(I18N.t(statusKey))}</span><button class="portal-button portal-button-gold" type="button" data-admission-approve="${escapeHTML(item.id)}"><span>${escapeHTML(I18N.t(incomplete ? 'admin.admissionRepair' : 'admin.admissionApprove'))}</span><span aria-hidden="true">→</span></button>${deleteAction}</div>`;
+      return `<article class="admin-admission-row${approved ? ' is-approved' : terminal || incomplete ? ' is-closed' : ''}" data-admission-id="${escapeHTML(item.id)}"><div><span class="announcement-type">${escapeHTML(item.school || I18N.t('admin.admissionUndecided'))}</span><h3>${escapeHTML(item.name || notAvailable())}</h3><p><a href="mailto:${escapeHTML(item.email)}">${escapeHTML(item.email || notAvailable())}</a></p>${approved ? `<small class="admission-provisioned">${escapeHTML(I18N.t('admin.admissionProvisioned'))}</small>${deliveryPanel}` : ''}${profilePanel}</div><div class="admin-announcement-meta">${escapeHTML(formatDate(item.createdAt, true))}</div>${action}</article>`;
     }).join('') : `<p class="empty-state">${escapeHTML(I18N.t('admin.noAdmissions'))}</p>`;
   };
 
@@ -1107,10 +1134,14 @@
     list.innerHTML = visible.length ? visible.map((item) => `<tr><td><code>${escapeHTML(item.key)}</code></td><td class="content-preview">${escapeHTML(item.zh)}</td><td class="content-preview">${escapeHTML(item.en)}</td><td><button class="table-action" type="button" data-edit-site-content="${escapeHTML(item.key)}">${escapeHTML(I18N.t('admin.edit'))}</button></td></tr>`).join('') : `<tr><td colspan="4" class="empty-state">${escapeHTML(I18N.t('admin.noSiteContent'))}</td></tr>`;
   };
 
-  const adminRequest = async (path, method, body) => {
-    state.adminMutationVersion += 1;
-    return postJSON(path, method, body || {});
-  };
+   const adminRequest = async (path, method, body) => {
+     state.adminMutationVersion += 1;
+     try {
+       return await postJSON(path, method, body || {});
+     } finally {
+       state.adminMutationVersion += 1;
+     }
+   };
 
   const getAdminSMTP = async () => {
     try { return await api('/admin/smtp'); }
@@ -1120,8 +1151,13 @@
     }
   };
   const requestAdminSMTP = async (suffix, method, body, mutate = true) => {
-    if (mutate) state.adminMutationVersion += 1;
-    return postJSON(`/admin/smtp${suffix}`, method, body || {});
+     if (!mutate) return postJSON(`/admin/smtp${suffix}`, method, body || {});
+     state.adminMutationVersion += 1;
+     try {
+       return await postJSON(`/admin/smtp${suffix}`, method, body || {});
+     } finally {
+       state.adminMutationVersion += 1;
+     }
   };
 
   // Every admin editor shares the same submit lock. This gives an immediate
@@ -1246,41 +1282,45 @@
     const list = document.querySelector('[data-admin-admission-list]');
     if (!list) return;
     list.addEventListener('click', async (event) => {
-      const copyButton = event.target.closest('[data-admission-copy-password]');
-      if (copyButton) {
-        const password = copyButton.dataset.admissionCopyPassword || '';
+      const resendButton = event.target.closest('[data-admission-resend]');
+      if (resendButton) {
+        const item = state.adminAdmissions.find((value) => String(value.id) === String(resendButton.dataset.admissionResend));
+        if (!item || !item.studentId) return;
+        if (!window.confirm(I18N.t('admin.admissionResendCredentialsConfirm'))) return;
+        setButtonLoading(resendButton, true, 'admin.admissionResendingCredentials');
         try {
-          if (navigator.clipboard?.writeText) {
-            await navigator.clipboard.writeText(password);
-          } else {
-            const input = document.createElement('textarea');
-            input.value = password;
-            input.setAttribute('readonly', '');
-            input.style.position = 'fixed';
-            input.style.opacity = '0';
-            document.body.appendChild(input);
-            input.select();
-            const copied = document.execCommand('copy');
-            input.remove();
-            if (!copied) throw new Error('clipboard unavailable');
-          }
-          showToast(I18N.t('admin.admissionCopied'));
-        } catch { showToast(I18N.t('admin.admissionCopyFailed')); }
+          const result = await adminRequest(`/admin/admissions/${encodeURIComponent(item.id)}/resend-credentials`, 'POST', {});
+          const updated = normalizeAdmission(result?.application || item);
+          updated.deliveryStatus = String(result?.deliveryStatus || updated.deliveryStatus || '').trim();
+          state.adminAdmissions = state.adminAdmissions.map((value) => String(value.id) === String(item.id) ? updated : value);
+          renderAdminAdmissions();
+          showToast(I18N.t('admin.admissionCredentialsQueued'));
+          void loadAdminData();
+        } catch (error) {
+          if (isAuthError(error)) redirectToLogin(); else showToast(localizedError(error, 'admin.admissionCredentialsFailed'));
+        } finally {
+          setButtonLoading(resendButton, false, 'admin.admissionResendCredentials');
+        }
         return;
       }
       const deleteButton = event.target.closest('[data-admission-delete]');
       if (deleteButton) {
         const item = state.adminAdmissions.find((value) => String(value.id) === String(deleteButton.dataset.admissionDelete));
-        if (!item || String(item.studentId || '').trim() || !window.confirm(I18N.t('admin.admissionDeleteConfirm'))) return;
+        if (!item) return;
+        const confirmKey = String(item.studentId || '').trim() ? 'admin.admissionDeleteProvisionedConfirm' : 'admin.admissionDeleteConfirm';
+        if (!window.confirm(I18N.t(confirmKey))) return;
         setButtonLoading(deleteButton, true, 'admin.admissionDeleting');
         try {
-          await adminRequest(`/admin/admissions/${encodeURIComponent(item.id)}`, 'DELETE');
+          const result = await adminRequest(`/admin/admissions/${encodeURIComponent(item.id)}`, 'DELETE');
           state.adminAdmissions = state.adminAdmissions.filter((value) => String(value.id) !== String(item.id));
           const removedNotificationIDs = new Set(state.adminNotifications.filter((value) => String(value.referenceId) === String(item.id)).map((value) => String(value.id)));
           state.adminNotifications = state.adminNotifications.filter((value) => !removedNotificationIDs.has(String(value.id)));
           state.adminNotificationUnread = state.adminNotifications.filter((value) => !value.readAt).length;
+          if (result?.student) removeStudentFromAdminState(result.student, result.admissionIds || [item.id]);
+          else if (item.studentId) removeStudentFromAdminState({ studentId: item.studentId }, result?.admissionIds || [item.id]);
           renderAdmin();
           showToast(I18N.t('admin.admissionDeleted'));
+          void loadAdminData();
         } catch (error) {
           if (isAuthError(error)) redirectToLogin(); else showToast(localizedError(error, 'admin.error'));
           setButtonLoading(deleteButton, false, 'admin.admissionDelete');
@@ -1292,20 +1332,20 @@
         const row = saveButton.closest('[data-admission-id]');
         const item = state.adminAdmissions.find((value) => String(value.id) === String(row?.dataset.admissionId));
         const nameInput = row?.querySelector('[data-admission-name]');
+        const englishNameInput = row?.querySelector('[data-admission-english-name]');
         const emailInput = row?.querySelector('[data-admission-email]');
         const schoolInput = row?.querySelector('[data-admission-school]');
         const notes = row?.querySelector('[data-admission-notes]')?.value?.trim() || '';
         if (!item || !row) return;
-        if (!nameInput?.checkValidity() || !emailInput?.checkValidity() || !schoolInput?.checkValidity()) {
+        if (!nameInput?.checkValidity() || !englishNameInput?.checkValidity() || !emailInput?.checkValidity() || !schoolInput?.checkValidity()) {
           showToast(I18N.t('admin.required'));
-          [nameInput, emailInput, schoolInput].find((input) => input && !input.checkValidity())?.focus();
+          [nameInput, englishNameInput, emailInput, schoolInput].find((input) => input && !input.checkValidity())?.focus();
           return;
         }
         setButtonLoading(saveButton, true, 'admin.savingAdmission');
         try {
-          const result = await adminRequest(`/admin/admissions/${encodeURIComponent(item.id)}`, 'PATCH', { name: nameInput.value.trim(), email: emailInput.value.trim(), school: schoolInput.value.trim(), notes, clearNotes: notes === '' });
+          const result = await adminRequest(`/admin/admissions/${encodeURIComponent(item.id)}`, 'PATCH', { name: nameInput.value.trim(), englishName: englishNameInput?.value.trim() || '', email: emailInput.value.trim(), school: schoolInput.value.trim(), notes, clearNotes: notes === '' });
           const updated = normalizeAdmission(result?.application || result || item);
-          updated.issuedCredentials = item.issuedCredentials;
           state.adminAdmissions = state.adminAdmissions.map((value) => String(value.id) === String(item.id) ? updated : value);
           renderAdminAdmissions();
           showToast(I18N.t('admin.admissionSaved'));
@@ -1326,12 +1366,10 @@
         const updated = normalizeAdmission(result?.application || result || item);
         updated.deliveryStatus = String(result?.deliveryStatus || updated.deliveryStatus || '').trim();
         updated.deliveryError = String(result?.deliveryError || updated.deliveryError || '').trim();
-        const initialPassword = String(result?.initialPassword || '').trim();
-        updated.issuedCredentials = result?.credentials || (initialPassword ? {
-          username: result?.student?.username || '',
-          password: initialPassword,
-          studentEmail: result?.student?.studentEmail || ''
-        } : null);
+        // Passwords are never returned by the approval API. The server keeps
+        // only a transient delivery copy and sends it through configured SMTP.
+        delete updated.issuedCredentials;
+        delete updated.credentials;
         state.adminAdmissions = state.adminAdmissions.map((value) => String(value.id) === String(item.id) ? updated : value);
         if (result?.student) {
           const student = normalizeAdminStudent(result.student);
@@ -1635,6 +1673,26 @@
         } catch (error) {
           if (isAuthError(error)) redirectToLogin(); else showToast(localizedError(error, 'admin.error'));
         }
+        return;
+      }
+      const remove = event.target.closest('[data-delete-student]');
+      if (remove) {
+        const item = adminStudent(remove.dataset.deleteStudent);
+        if (!item) return;
+        const confirmKey = item.admissionApproved ? 'admin.studentDeleteProvisionedConfirm' : 'admin.studentDeleteConfirm';
+        if (!window.confirm(I18N.t(confirmKey))) return;
+        setButtonLoading(remove, true, 'admin.studentDeleting');
+        try {
+          const result = await adminRequest(`/admin/students/${encodeURIComponent(item.id)}`, 'DELETE');
+          const deletedStudent = result?.student || item;
+          removeStudentFromAdminState(deletedStudent, result?.admissionIds || []);
+          renderAdmin();
+          showToast(I18N.t('admin.studentDeleted'));
+          void loadAdminData();
+        } catch (error) {
+          if (isAuthError(error)) redirectToLogin(); else showToast(localizedError(error, 'admin.error'));
+          setButtonLoading(remove, false, 'admin.studentDelete');
+        }
       }
     });
   };
@@ -1765,12 +1823,14 @@
         en: typeof item.en === 'string' ? item.en : (existing.en || '')
       });
     });
-    const previousAdmissions = new Map(state.adminAdmissions.map((item) => [String(item.id), item]));
     state.adminCourses = (Array.isArray(courses) ? courses : []).map(normalizeCourse);
     state.adminAnnouncements = (Array.isArray(announcements) ? announcements : []).map(normalizeAnnouncement);
+    // The API never returns onboarding passwords; do not retain any legacy
+    // credential projection that may have been cached by an older bundle.
     state.adminAdmissions = (Array.isArray(admissions) ? admissions : []).map(normalizeAdmission).map((item) => {
-      const previous = previousAdmissions.get(String(item.id));
-      return item.issuedCredentials || !previous?.issuedCredentials ? item : { ...item, issuedCredentials: previous.issuedCredentials };
+      delete item.issuedCredentials;
+      delete item.credentials;
+      return item;
     });
     state.adminStudents = (Array.isArray(students) ? students : []).map(normalizeAdminStudent);
     state.adminGrades = (Array.isArray(grades) ? grades : []).map(normalizeAdminGrade);
@@ -1789,8 +1849,11 @@
     return true;
   };
 
-  const loadAdminData = async () => {
-    if (state.adminLoading) return;
+   const loadAdminData = async () => {
+     if (state.adminLoading) {
+       state.adminRefreshQueued = true;
+       return;
+     }
     state.adminLoading = true;
     const refresh = document.querySelector('[data-admin-refresh]');
     setButtonLoading(refresh, true, 'admin.refreshing');
@@ -1800,11 +1863,15 @@
       for (let attempt = 0; attempt < 2; attempt += 1) {
         if (await loadAdminDataNow()) break;
       }
-    } finally {
-      state.adminLoading = false;
-      setButtonLoading(refresh, false, 'admin.refresh');
-    }
-  };
+     } finally {
+       state.adminLoading = false;
+       setButtonLoading(refresh, false, 'admin.refresh');
+       if (state.adminRefreshQueued) {
+         state.adminRefreshQueued = false;
+         void loadAdminData();
+       }
+     }
+   };
 
   const startAdminRefresh = () => {
     if (state.adminRefreshTimer) return;

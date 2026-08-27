@@ -15,7 +15,49 @@ import (
 var (
 	errAdmissionDeleteNotFound     = errors.New("admission delete target was not found")
 	errAdmissionAlreadyProvisioned = errors.New("admission delete target already has a provisioned student")
+	errAdmissionUpdateNotFound     = errors.New("admission update target was not found")
+	errStudentDeleteNotFound       = errors.New("student delete target was not found")
+	errStudentDeleteAdmin          = errors.New("administrator accounts cannot be deleted through the student endpoint")
+	errStudentIDAmbiguous          = errors.New("student external id belongs to multiple student accounts")
+	errStudentIdentityMismatch     = errors.New("admission and generated student identity do not match")
+	errStudentEmailConflict        = errors.New("student contact email conflicts with another login identifier")
 )
+
+const deleteTransactionAttempts = 3
+
+type deleteCommitFailure struct{ err error }
+
+func (e deleteCommitFailure) Error() string { return "delete transaction commit: " + e.err.Error() }
+func (e deleteCommitFailure) Unwrap() error { return e.err }
+
+// MySQL can abort one side of the student/admission cascade when two
+// administrator requests lock the same records in opposite order. Retrying a
+// fresh transaction is safe because every delete is idempotent and the row
+// lock/read is repeated from durable state.
+func isRetryableDeleteTransactionError(err error) bool {
+	var commitFailure deleteCommitFailure
+	if errors.As(err, &commitFailure) {
+		// A commit error can leave the outcome unknown. Do not replay a delete
+		// after the server may already have committed it.
+		return false
+	}
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	return mysqlErr.Number == 1205 || mysqlErr.Number == 1213
+}
+
+type studentDeletePersistedResult struct {
+	User         *User
+	AdmissionIDs []string
+}
+
+type admissionDeletePersistedResult struct {
+	Application  *AdmissionApplication
+	Student      *User
+	AdmissionIDs []string
+}
 
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS cgu_users (
@@ -29,7 +71,8 @@ CREATE TABLE IF NOT EXISTS cgu_users (
   college VARCHAR(255) NOT NULL DEFAULT '',
   year_text VARCHAR(32) NOT NULL DEFAULT '',
   disabled_flag TINYINT(1) NOT NULL DEFAULT 0,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_user_student_id (student_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS cgu_courses (
   id VARCHAR(64) PRIMARY KEY,
@@ -104,6 +147,7 @@ CREATE TABLE IF NOT EXISTS cgu_announcements (
 CREATE TABLE IF NOT EXISTS cgu_admissions (
   id VARCHAR(64) PRIMARY KEY,
   name_text VARCHAR(120) NOT NULL,
+  english_name VARCHAR(120) NOT NULL DEFAULT '',
   email VARCHAR(255) NOT NULL,
   school_text VARCHAR(160) NOT NULL,
   status_name VARCHAR(32) NOT NULL DEFAULT 'pending',
@@ -130,7 +174,8 @@ CREATE TABLE IF NOT EXISTS cgu_admin_notifications (
   created_at VARCHAR(64) NOT NULL,
   read_at VARCHAR(64) NULL,
   INDEX idx_admin_notification_recipient (recipient_id, created_at),
-  INDEX idx_admin_notification_unread (recipient_id, read_at, created_at)
+  INDEX idx_admin_notification_unread (recipient_id, read_at, created_at),
+  INDEX idx_admin_notification_reference (reference_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS cgu_mailbox_messages (
   id VARCHAR(64) PRIMARY KEY,
@@ -227,6 +272,38 @@ func migrateDatabase(ctx context.Context, db *sql.DB) error {
 	if err := ensureCourseBilingualColumns(ctx, db); err != nil {
 		return fmt.Errorf("database courses migration: %w", err)
 	}
+	if err := ensureDeletionIndexes(ctx, db); err != nil {
+		return fmt.Errorf("database deletion indexes migration: %w", err)
+	}
+	return nil
+}
+
+// ensureDeletionIndexes keeps cleanup queries bounded on installations that
+// predate the account-cascade workflow. The indexes are deliberately
+// non-unique: imported data may contain duplicate external student IDs and
+// must remain deletable without a destructive deduplication migration.
+func ensureDeletionIndexes(ctx context.Context, db *sql.DB) error {
+	indexQuery := `SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`
+	indexes := []struct {
+		table string
+		name  string
+		def   string
+	}{
+		{table: "cgu_users", name: "idx_user_student_id", def: "ALTER TABLE cgu_users ADD INDEX idx_user_student_id (student_id)"},
+		{table: "cgu_admin_notifications", name: "idx_admin_notification_reference", def: "ALTER TABLE cgu_admin_notifications ADD INDEX idx_admin_notification_reference (reference_id)"},
+	}
+	for _, index := range indexes {
+		var count int
+		if err := db.QueryRowContext(ctx, indexQuery, index.table, index.name).Scan(&count); err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, index.def); err != nil && !isDuplicateSchemaObject(err) {
+			return fmt.Errorf("add %s: %w", index.name, err)
+		}
+	}
 	return nil
 }
 
@@ -305,6 +382,7 @@ func ensureAdmissionApprovalColumns(ctx context.Context, db *sql.DB) error {
 		name string
 		def  string
 	}{
+		{name: "english_name", def: "VARCHAR(120) NOT NULL DEFAULT ''"},
 		{name: "student_id", def: "VARCHAR(128) NOT NULL DEFAULT ''"},
 		{name: "approved_at", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
 		{name: "approved_by", def: "VARCHAR(64) NOT NULL DEFAULT ''"},
@@ -674,7 +752,7 @@ func loadAnnouncements(ctx context.Context, db *sql.DB) ([]*Announcement, error)
 }
 
 func loadAdmissions(ctx context.Context, db *sql.DB) ([]*AdmissionApplication, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, name_text, email, school_text, status_name, notes_text, created_at, updated_at, student_id, approved_at, approved_by, initial_password_issued_at FROM cgu_admissions ORDER BY created_at DESC`)
+	rows, err := db.QueryContext(ctx, `SELECT id, name_text, english_name, email, school_text, status_name, notes_text, created_at, updated_at, student_id, approved_at, approved_by, initial_password_issued_at FROM cgu_admissions ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -683,7 +761,7 @@ func loadAdmissions(ctx context.Context, db *sql.DB) ([]*AdmissionApplication, e
 	for rows.Next() {
 		item := &AdmissionApplication{}
 		var studentID, approvedAt, approvedBy, passwordIssuedAt sql.NullString
-		if err := rows.Scan(&item.ID, &item.Name, &item.Email, &item.School, &item.Status, &item.Notes, &item.CreatedAt, &item.UpdatedAt, &studentID, &approvedAt, &approvedBy, &passwordIssuedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.EnglishName, &item.Email, &item.School, &item.Status, &item.Notes, &item.CreatedAt, &item.UpdatedAt, &studentID, &approvedAt, &approvedBy, &passwordIssuedAt); err != nil {
 			return nil, err
 		}
 		if studentID.Valid {
@@ -893,7 +971,7 @@ func (s *Store) persistAdmissionLocked(item *AdmissionApplication) error {
 	// Status transitions are owned by the approval action. Omitting
 	// status_name from the duplicate branch prevents a stale admin process from
 	// downgrading a durably approved application while saving notes.
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_admissions (id, name_text, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name_text=VALUES(name_text), email=VALUES(email), school_text=VALUES(school_text), notes_text=VALUES(notes_text), updated_at=VALUES(updated_at)`, item.ID, item.Name, item.Email, item.School, item.Status, item.Notes, item.CreatedAt, item.UpdatedAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cgu_admissions (id, name_text, english_name, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name_text=VALUES(name_text), english_name=VALUES(english_name), email=VALUES(email), school_text=VALUES(school_text), notes_text=VALUES(notes_text), updated_at=VALUES(updated_at)`, item.ID, item.Name, item.EnglishName, item.Email, item.School, item.Status, item.Notes, item.CreatedAt, item.UpdatedAt)
 	return err
 }
 
@@ -901,7 +979,7 @@ func persistAdmissionTx(ctx context.Context, tx *sql.Tx, admission *AdmissionApp
 	if admission == nil || notification == nil {
 		return fmt.Errorf("admission and notification are required")
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO cgu_admissions (id, name_text, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, admission.ID, admission.Name, admission.Email, admission.School, admission.Status, admission.Notes, admission.CreatedAt, admission.UpdatedAt); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO cgu_admissions (id, name_text, english_name, email, school_text, status_name, notes_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, admission.ID, admission.Name, admission.EnglishName, admission.Email, admission.School, admission.Status, admission.Notes, admission.CreatedAt, admission.UpdatedAt); err != nil {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO cgu_admin_notifications (id, recipient_id, type_name, title_zh, title_en, body_zh, body_en, reference_id, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, notification.ID, notification.RecipientID, notification.Type, notification.TitleZh, notification.TitleEn, notification.BodyZh, notification.BodyEn, notification.ReferenceID, notification.CreatedAt, nullableString(notification.ReadAt))
@@ -925,7 +1003,95 @@ func (s *Store) persistAdmissionWithNotificationLocked(admission *AdmissionAppli
 	return tx.Commit()
 }
 
-const admissionForUpdateSQL = `SELECT id, name_text, email, school_text, status_name, notes_text, created_at, updated_at, student_id, approved_at, approved_by, initial_password_issued_at FROM cgu_admissions WHERE id = ? FOR UPDATE`
+const admissionForUpdateSQL = `SELECT id, name_text, english_name, email, school_text, status_name, notes_text, created_at, updated_at, student_id, approved_at, approved_by, initial_password_issued_at FROM cgu_admissions WHERE id = ? FOR UPDATE`
+
+const admissionUpdateSQL = `UPDATE cgu_admissions SET name_text = ?, english_name = ?, email = ?, school_text = ?, notes_text = ?, updated_at = ? WHERE id = ?`
+
+// persistAdmissionUpdateTx updates only fields that remain editable through
+// PATCH. The caller must hold the admission row lock from admissionForUpdateSQL
+// so a concurrent approval cannot change student_id between the check and this
+// write.
+func persistAdmissionUpdateTx(ctx context.Context, tx *sql.Tx, item *AdmissionApplication) error {
+	if item == nil {
+		return errors.New("admission update record is required")
+	}
+	_, err := tx.ExecContext(ctx, admissionUpdateSQL, item.Name, item.EnglishName, item.Email, item.School, item.Notes, item.UpdatedAt, item.ID)
+	if err != nil {
+		return err
+	}
+	// The caller has already locked and read the row with FOR UPDATE. MySQL
+	// legitimately reports zero affected rows when all submitted values are
+	// unchanged, so RowsAffected cannot be used as an existence check here.
+	return nil
+}
+
+// syncAdmissionMailboxRecipientTx keeps a provisioned application's pending
+// onboarding delivery pointed at the current contact address. A sent message
+// is historical and must remain auditable; a live sending lease is locked out
+// so an address cannot change underneath an SMTP transaction.
+func syncAdmissionMailboxRecipientTx(ctx context.Context, tx *sql.Tx, applicationID, email string) (bool, error) {
+	applicationID = strings.TrimSpace(applicationID)
+	email = strings.TrimSpace(email)
+	if applicationID == "" || email == "" {
+		return false, nil
+	}
+	var id, deliveryMode, deliveryStatus, deliveryStartedAt sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT id, delivery_mode, delivery_status, delivery_started_at FROM cgu_mailbox_messages WHERE request_key = ? FOR UPDATE`, admissionApprovalRequestKey(applicationID)).Scan(&id, &deliveryMode, &deliveryStatus, &deliveryStartedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(deliveryMode.String), mailboxDeliveryModeSMTP) {
+		return false, nil
+	}
+	status := strings.ToLower(strings.TrimSpace(deliveryStatus.String))
+	if status == mailboxDeliverySent {
+		return false, nil
+	}
+	if status == mailboxDeliverySending && !mailboxDeliveryLeaseExpired(deliveryStartedAt.String) {
+		return false, errAdmissionCredentialDeliveryInProgress
+	}
+	if !id.Valid || strings.TrimSpace(id.String) == "" {
+		return false, errors.New("admission mailbox id is empty")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE cgu_mailbox_messages SET external_recipient = ? WHERE id = ?`, email, id.String); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ensureStudentContactEmailAvailableTx checks every login identifier before a
+// provisioned student's contact address is changed. Email is also accepted as
+// a login identifier, so allowing an overlap would make authentication choose
+// an arbitrary account. The transaction already owns the admission row; lock
+// the user rows for the short update to keep two administrator edits ordered.
+func ensureStudentContactEmailAvailableTx(ctx context.Context, tx *sql.Tx, email, selectedID, emailDomain string) error {
+	email = strings.TrimSpace(email)
+	selectedID = strings.TrimSpace(selectedID)
+	if email == "" || selectedID == "" {
+		return errStudentEmailConflict
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, username, email, student_id, role_name FROM cgu_users WHERE id <> ? FOR UPDATE`, selectedID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	proposed := []string{email}
+	for rows.Next() {
+		var id, username, candidateEmail, studentID, role string
+		if err := rows.Scan(&id, &username, &candidateEmail, &studentID, &role); err != nil {
+			return err
+		}
+		_ = id
+		_ = role
+		if identifiersOverlap(proposed, []string{username, candidateEmail, studentMailbox(studentID, emailDomain)}) {
+			return errStudentEmailConflict
+		}
+	}
+	return rows.Err()
+}
 
 const admissionApprovalUserInsertSQL = `INSERT INTO cgu_users (id, username, name_text, email, role_name, password_hash, student_id, college, year_text, disabled_flag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
@@ -1060,45 +1226,578 @@ func (s *Store) deleteAnnouncementPersistedLocked(id string) error {
 	return err
 }
 
-func (s *Store) deleteAdmissionPersistedLocked(id string) error {
-	if s.db == nil {
+type userRowScanner interface {
+	Scan(dest ...any) error
+}
+
+const userForDeleteSQL = `SELECT id, username, name_text, email, role_name, password_hash, student_id, college, year_text, disabled_flag FROM cgu_users WHERE id = ? FOR UPDATE`
+
+// studentForAdmissionDeleteSQL deliberately returns every possible candidate.
+// A deterministic generated id or an explicit legacy primary-key reference is
+// unambiguous; an external student id is only accepted when exactly one student
+// row matches. Limiting in SQL would silently pick the wrong account when old
+// imports contain duplicate external ids.
+const studentForAdmissionDeleteSQL = `SELECT id, username, name_text, email, role_name, password_hash, student_id, college, year_text, disabled_flag FROM cgu_users WHERE role_name = 'student' AND (id = ? OR id = ? OR student_id = ?) ORDER BY CASE WHEN id = ? THEN 0 WHEN id = ? THEN 1 ELSE 2 END, id FOR UPDATE`
+
+const admissionsForStudentByBothRefsSQL = `SELECT id FROM cgu_admissions WHERE student_id = ? OR student_id = ? ORDER BY id FOR UPDATE`
+const admissionsForStudentByOneRefSQL = `SELECT id FROM cgu_admissions WHERE student_id = ? ORDER BY id FOR UPDATE`
+
+const usersForStudentIDDeleteSQL = `SELECT id, role_name FROM cgu_users WHERE student_id = ? ORDER BY id FOR UPDATE`
+
+const usersForStudentReferenceDeleteSQL = `SELECT id, student_id, role_name FROM cgu_users WHERE id = ? OR id = ? OR student_id = ? ORDER BY id FOR UPDATE`
+const usersForStudentReferenceWithExternalDeleteSQL = `SELECT id, student_id, role_name FROM cgu_users WHERE id = ? OR id = ? OR student_id = ? OR student_id = ? ORDER BY id FOR UPDATE`
+
+func scanUserDeleteRow(scanner userRowScanner) (*User, error) {
+	item := &User{}
+	if err := scanner.Scan(&item.ID, &item.Username, &item.Name, &item.Email, &item.Role, &item.PasswordHash, &item.StudentID, &item.College, &item.Year, &item.Disabled); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func loadAdmissionDeleteStudentCandidates(ctx context.Context, tx *sql.Tx, deterministicID, applicationReference string) ([]*User, error) {
+	rows, err := tx.QueryContext(ctx, studentForAdmissionDeleteSQL, deterministicID, applicationReference, applicationReference, deterministicID, applicationReference)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	candidates := make([]*User, 0)
+	for rows.Next() {
+		candidate, scanErr := scanUserDeleteRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return candidates, nil
+}
+
+// chooseAdmissionDeleteStudent applies the ownership hierarchy used by the
+// approval workflow. The generated account is authoritative, followed by a
+// direct legacy primary-key reference. Only a unique external student-id
+// match is safe to infer; duplicate external ids are rejected rather than
+// deleting an arbitrary account.
+func chooseAdmissionDeleteStudent(candidates []*User, deterministicID, applicationReference string) (*User, error) {
+	deterministicID = strings.TrimSpace(deterministicID)
+	applicationReference = strings.TrimSpace(applicationReference)
+	var deterministic, direct *User
+	external := make([]*User, 0, len(candidates))
+	seenExternal := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil || !strings.EqualFold(strings.TrimSpace(candidate.Role), "student") {
+			continue
+		}
+		if deterministic == nil && strings.EqualFold(strings.TrimSpace(candidate.ID), deterministicID) {
+			deterministic = candidate
+		}
+		if direct == nil && applicationReference != "" && strings.EqualFold(strings.TrimSpace(candidate.ID), applicationReference) {
+			direct = candidate
+		}
+		if applicationReference != "" && strings.EqualFold(strings.TrimSpace(candidate.StudentID), applicationReference) {
+			key := strings.ToLower(strings.TrimSpace(candidate.ID))
+			if _, ok := seenExternal[key]; !ok {
+				seenExternal[key] = struct{}{}
+				external = append(external, candidate)
+			}
+		}
+	}
+	if deterministic != nil {
+		// A generated account is authoritative only when its external student
+		// number still belongs to this application. A stale/corrupt row with the
+		// deterministic primary key must never make us delete another applicant.
+		if applicationReference != "" && !strings.EqualFold(strings.TrimSpace(deterministic.StudentID), applicationReference) && !strings.EqualFold(strings.TrimSpace(deterministic.ID), applicationReference) {
+			return nil, errStudentIdentityMismatch
+		}
+		return deterministic, nil
+	}
+	if direct != nil {
+		return direct, nil
+	}
+	if len(external) > 1 {
+		return nil, errStudentIDAmbiguous
+	}
+	if len(external) == 1 {
+		return external[0], nil
+	}
+	return nil, nil
+}
+
+func candidateStudentIDIsShared(candidates []*User, studentID, selectedID string) bool {
+	studentID = strings.TrimSpace(studentID)
+	selectedID = strings.TrimSpace(selectedID)
+	if studentID == "" {
+		return false
+	}
+	for _, candidate := range candidates {
+		if candidate == nil || !strings.EqualFold(strings.TrimSpace(candidate.Role), "student") {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(candidate.StudentID), studentID) && !strings.EqualFold(strings.TrimSpace(candidate.ID), selectedID) {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureUniqueStudentIDForDelete(ctx context.Context, tx *sql.Tx, studentID string) error {
+	studentID = strings.TrimSpace(studentID)
+	if studentID == "" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	tx, err := s.db.BeginTx(ctx, nil)
+	rows, err := tx.QueryContext(ctx, usersForStudentIDDeleteSQL, studentID)
 	if err != nil {
 		return err
 	}
-	var studentID sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT student_id FROM cgu_admissions WHERE id = ? FOR UPDATE`, id).Scan(&studentID); err != nil {
-		_ = tx.Rollback()
-		if errors.Is(err, sql.ErrNoRows) {
-			return errAdmissionDeleteNotFound
+	defer rows.Close()
+	studentCount := 0
+	for rows.Next() {
+		var id, role string
+		if err := rows.Scan(&id, &role); err != nil {
+			return err
 		}
-		return err
+		if strings.EqualFold(strings.TrimSpace(role), "student") {
+			studentCount++
+			if studentCount > 1 {
+				return errStudentIDAmbiguous
+			}
+		}
 	}
-	if studentID.Valid && strings.TrimSpace(studentID.String) != "" {
-		_ = tx.Rollback()
-		return errAdmissionAlreadyProvisioned
+	return rows.Err()
+}
+
+// ensureOwnedStudentDeleteReferences locks every student row that may own one
+// of the broad legacy references used by the cascade. A reference shared with
+// another account is ambiguous and must be repaired instead of being used in
+// DELETE ... OR ... statements that could erase the other student's data.
+func ensureOwnedStudentDeleteReferences(ctx context.Context, tx *sql.Tx, selectedID string, externalRefs ...string) error {
+	selectedID = strings.TrimSpace(selectedID)
+	if selectedID == "" {
+		return errStudentDeleteNotFound
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM cgu_admin_notifications WHERE reference_id = ?`, id); err != nil {
-		_ = tx.Rollback()
-		return err
+	references := normalizedDeleteReferences(selectedID)
+	for _, reference := range externalRefs {
+		references = normalizedDeleteReferences(append(references, reference)...)
 	}
-	result, err := tx.ExecContext(ctx, `DELETE FROM cgu_admissions WHERE id = ?`, id)
+	// Preserve the stable SQL used by the direct student-delete path. This is
+	// also useful for old integrations that inspect the query text, while the
+	// generated form below handles three or more legacy references safely.
+	query := usersForStudentReferenceDeleteSQL
+	args := []any{selectedID, selectedID, selectedID}
+	if len(references) == 2 {
+		query = usersForStudentReferenceWithExternalDeleteSQL
+		args = []any{references[0], references[1], references[0], references[1]}
+	} else if len(references) > 2 {
+		idPredicate, idArgs := referencePredicate("id", references)
+		studentPredicate, studentArgs := referencePredicate("student_id", references)
+		query = `SELECT id, student_id, role_name FROM cgu_users WHERE ` + idPredicate + ` OR ` + studentPredicate + ` ORDER BY id FOR UPDATE`
+		args = append(idArgs, studentArgs...)
+	}
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		_ = tx.Rollback()
+		return err
+	}
+	defer rows.Close()
+	selectedMatches := 0
+	for rows.Next() {
+		var id, candidateStudentID, role string
+		if err := rows.Scan(&id, &candidateStudentID, &role); err != nil {
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(id), selectedID) {
+			if !strings.EqualFold(strings.TrimSpace(role), "student") {
+				// A non-student row occupying the selected primary-key
+				// reference is a collision, even when the database collation
+				// makes the IDs compare equal.
+				return errStudentIDAmbiguous
+			}
+			selectedMatches++
+			if selectedMatches > 1 {
+				// Case-sensitive legacy schemas can contain IDs that differ
+				// only by case; cleanup predicates are intentionally folded,
+				// so deleting either row would be unsafe.
+				return errStudentIDAmbiguous
+			}
+			continue
+		}
+		// Any second row is unsafe: it may be a duplicate external number, a
+		// primary/external crossover, or a non-student row sharing a mailbox
+		// reference. Fail closed rather than broadening the cascade.
+		_ = candidateStudentID
+		return errStudentIDAmbiguous
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if selectedMatches != 1 {
+		return errStudentDeleteNotFound
+	}
+	return nil
+}
+
+func normalizedDeleteReferences(values ...string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		key := strings.ToLower(value)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func referencePredicate(column string, references []string) (string, []any) {
+	if len(references) == 0 {
+		return "", nil
+	}
+	args := make([]any, len(references))
+	for index, reference := range references {
+		args[index] = reference
+	}
+	if len(references) == 1 {
+		return column + " = ?", args
+	}
+	if len(references) == 2 {
+		return column + " = ? OR " + column + " = ?", args
+	}
+	placeholders := make([]string, len(references))
+	for index := range placeholders {
+		placeholders[index] = "?"
+	}
+	return column + " IN (" + strings.Join(placeholders, ", ") + ")", args
+}
+
+func lockedAdmissionIDsForStudent(ctx context.Context, tx *sql.Tx, userID, studentID string, extraReferences ...string) ([]string, error) {
+	// Keep the historical argument order (external id first, then primary id)
+	// for the common two-reference query, while allowing a legacy application
+	// reference and the canonical external id to be included as additional,
+	// de-duplicated values.
+	references := normalizedDeleteReferences(studentID, userID)
+	for _, reference := range normalizedDeleteReferences(extraReferences...) {
+		references = normalizedDeleteReferences(append(references, reference)...)
+	}
+	if len(references) == 0 {
+		return nil, nil
+	}
+	query := "SELECT id FROM cgu_admissions WHERE "
+	var args []any
+	predicate, predicateArgs := referencePredicate("student_id", references)
+	query += predicate + " ORDER BY id FOR UPDATE"
+	args = predicateArgs
+	// Preserve stable SQL strings used by older installations/tests for one or
+	// two references; three or more references use the equivalent IN predicate.
+	if len(references) == 1 {
+		query = admissionsForStudentByOneRefSQL
+	} else if len(references) == 2 {
+		query = admissionsForStudentByBothRefsSQL
+	}
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(id) != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
+}
+
+// deleteStudentRowsTx removes every durable projection owned by a student.
+// Older imports sometimes used more than one identifier (the user primary key,
+// an application reference, or the canonical external id), so all references
+// are normalized once and reused for every dependent table.
+func deleteStudentRowsTx(ctx context.Context, tx *sql.Tx, userID, studentID string, admissionIDs []string, extraReferences ...string) error {
+	references := normalizedDeleteReferences(userID, studentID)
+	for _, reference := range extraReferences {
+		references = normalizedDeleteReferences(append(references, reference)...)
+	}
+	admissionIDs = normalizedDeleteReferences(admissionIDs...)
+	for _, admissionID := range admissionIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM cgu_admin_notifications WHERE reference_id = ?`, admissionID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM cgu_mailbox_messages WHERE request_key = ?`, admissionApprovalRequestKey(admissionID)); err != nil {
+			return err
+		}
+	}
+	if len(references) > 0 {
+		predicate, args := referencePredicate("recipient_id", references)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM cgu_mailbox_messages WHERE `+predicate, args...); err != nil {
+			return err
+		}
+		for _, table := range []string{"cgu_enrollments", "cgu_grades", "cgu_schedule"} {
+			predicate, args := referencePredicate("student_id", references)
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE `+predicate, args...); err != nil {
+				return err
+			}
+		}
+	}
+	for _, admissionID := range admissionIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM cgu_admissions WHERE id = ?`, admissionID); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM cgu_users WHERE id = ? AND role_name = 'student'`, userID)
+	if err != nil {
 		return err
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		_ = tx.Rollback()
 		return err
 	}
 	if rows != 1 {
-		_ = tx.Rollback()
+		return errStudentDeleteNotFound
+	}
+	return nil
+}
+
+// deleteAdmissionOnlyTx removes the projections that are owned by one
+// application row. It is intentionally used when an accepted legacy row has
+// no resolvable student account: without a verified owner, student-id based
+// deletes could erase another account's academic history.
+func deleteAdmissionOnlyTx(ctx context.Context, tx *sql.Tx, application *AdmissionApplication) error {
+	if application == nil || strings.TrimSpace(application.ID) == "" {
 		return errAdmissionDeleteNotFound
 	}
-	return tx.Commit()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM cgu_admin_notifications WHERE reference_id = ?`, application.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM cgu_mailbox_messages WHERE request_key = ?`, admissionApprovalRequestKey(application.ID)); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM cgu_admissions WHERE id = ?`, application.ID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return errAdmissionDeleteNotFound
+	}
+	return nil
+}
+
+// deleteStudentPersistedLocked performs the account and academic-data
+// deletion in one transaction. The caller holds Store.mu; the database row is
+// locked again here so a second application instance cannot race the cleanup.
+func (s *Store) deleteStudentPersistedOnce(id string) (*studentDeletePersistedResult, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	user, err := scanUserDeleteRow(tx.QueryRowContext(ctx, userForDeleteSQL, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errStudentDeleteNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(user.Role), "student") {
+		return nil, errStudentDeleteAdmin
+	}
+	if err := ensureOwnedStudentDeleteReferences(ctx, tx, user.ID, user.StudentID); err != nil {
+		return nil, err
+	}
+	admissionIDs, err := lockedAdmissionIDsForStudent(ctx, tx, user.ID, user.StudentID)
+	if err != nil {
+		return nil, err
+	}
+	if err := deleteStudentRowsTx(ctx, tx, user.ID, user.StudentID, admissionIDs); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, deleteCommitFailure{err: err}
+	}
+	committed = true
+	return &studentDeletePersistedResult{User: user, AdmissionIDs: admissionIDs}, nil
+}
+
+func (s *Store) deleteStudentPersistedLocked(id string) (*studentDeletePersistedResult, error) {
+	for attempt := 0; attempt < deleteTransactionAttempts; attempt++ {
+		result, err := s.deleteStudentPersistedOnce(id)
+		if !isRetryableDeleteTransactionError(err) || attempt == deleteTransactionAttempts-1 {
+			return result, err
+		}
+		time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
+	}
+	return nil, errors.New("student delete transaction retry exhausted")
+}
+
+// deleteAdmissionCascadePersistedLocked deletes an application and, when it
+// has been provisioned, the linked student account and all dependent records.
+// The admission row is locked first; this is the authoritative decision even
+// when the administrator's browser or another process has a stale cache.
+func (s *Store) deleteAdmissionCascadePersistedOnce(id string) (*admissionDeletePersistedResult, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	application, err := scanAdmissionApprovalRow(tx.QueryRowContext(ctx, admissionForUpdateSQL, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errAdmissionDeleteNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	studentID := strings.TrimSpace(application.StudentID)
+	if studentID == "" {
+		if err := deleteAdmissionOnlyTx(ctx, tx, application); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, deleteCommitFailure{err: err}
+		}
+		committed = true
+		return &admissionDeletePersistedResult{Application: application, AdmissionIDs: []string{application.ID}}, nil
+	}
+	_, _, deterministicUserID := admissionStudentIdentity(application.ID)
+	candidates, studentErr := loadAdmissionDeleteStudentCandidates(ctx, tx, deterministicUserID, studentID)
+	if studentErr != nil {
+		return nil, studentErr
+	}
+	student, studentErr := chooseAdmissionDeleteStudent(candidates, deterministicUserID, studentID)
+	if studentErr != nil {
+		return nil, studentErr
+	}
+	if student == nil {
+		// There is no verified account owner for the legacy external id. Delete
+		// only records keyed directly to this application; never broaden the
+		// cleanup to student-id based academic projections.
+		if err := deleteAdmissionOnlyTx(ctx, tx, application); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, deleteCommitFailure{err: err}
+		}
+		committed = true
+		return &admissionDeletePersistedResult{Application: application, AdmissionIDs: []string{application.ID}}, nil
+	}
+	userID := deterministicUserID
+	canonicalStudentID := ""
+	cleanupStudentID := studentID
+	if student != nil {
+		userID = student.ID
+		canonicalStudentID = strings.TrimSpace(student.StudentID)
+		isDeterministic := strings.EqualFold(strings.TrimSpace(student.ID), deterministicUserID)
+		ownsApplicationReference := strings.EqualFold(strings.TrimSpace(student.ID), studentID) || strings.EqualFold(canonicalStudentID, studentID)
+		if isDeterministic && !ownsApplicationReference {
+			// A stale legacy application reference must not broaden cleanup to an
+			// unrelated account when the generated account is authoritative.
+			cleanupStudentID = ""
+		}
+		if cleanupStudentID != "" && candidateStudentIDIsShared(candidates, cleanupStudentID, student.ID) {
+			// The application reference is also used as another account's
+			// external number. Keep it for the explicitly targeted admission
+			// row, but do not use it to remove shared dependent records.
+			cleanupStudentID = ""
+		}
+		if isDeterministic && candidateStudentIDIsShared(candidates, canonicalStudentID, student.ID) {
+			// The generated account can still be removed safely by its primary key,
+			// but a shared external id is not safe to use for dependent rows.
+			cleanupStudentID = ""
+			canonicalStudentID = ""
+		} else if canonicalStudentID != "" {
+			if err := ensureUniqueStudentIDForDelete(ctx, tx, canonicalStudentID); err != nil {
+				if isDeterministic && errors.Is(err, errStudentIDAmbiguous) {
+					// A stale generated account may carry a number now shared by
+					// legacy accounts. The generated primary key remains safe to
+					// delete, while the shared external reference is omitted.
+					canonicalStudentID = ""
+				} else {
+					return nil, err
+				}
+			}
+		}
+		// The durable dependent-row cleanup accepts every legacy identity that
+		// can point at this account. Lock those references before deleting: a
+		// canonical/external number reused as another user's primary key (or a
+		// non-student reference) would otherwise erase that user's projections.
+		if err := ensureOwnedStudentDeleteReferences(ctx, tx, userID, cleanupStudentID, canonicalStudentID); err != nil {
+			return nil, err
+		}
+	}
+	// Remove all admission rows linked to this generated identity. In a normal
+	// approval flow this is exactly the target row; the broader cleanup avoids
+	// leaving an orphaned application after a legacy import.
+	admissionIDs := []string{id}
+	if studentID != "" {
+		linked, linkedErr := lockedAdmissionIDsForStudent(ctx, tx, userID, cleanupStudentID, canonicalStudentID)
+		if linkedErr != nil {
+			return nil, linkedErr
+		}
+		seen := map[string]bool{strings.ToLower(strings.TrimSpace(id)): true}
+		for _, linkedID := range linked {
+			key := strings.ToLower(strings.TrimSpace(linkedID))
+			if key != "" && !seen[key] {
+				seen[key] = true
+				admissionIDs = append(admissionIDs, linkedID)
+			}
+		}
+	}
+	if err := deleteStudentRowsTx(ctx, tx, userID, cleanupStudentID, admissionIDs, canonicalStudentID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, deleteCommitFailure{err: err}
+	}
+	committed = true
+	return &admissionDeletePersistedResult{Application: application, Student: student, AdmissionIDs: admissionIDs}, nil
+}
+
+func (s *Store) deleteAdmissionCascadePersistedLocked(id string) (*admissionDeletePersistedResult, error) {
+	for attempt := 0; attempt < deleteTransactionAttempts; attempt++ {
+		result, err := s.deleteAdmissionCascadePersistedOnce(id)
+		if !isRetryableDeleteTransactionError(err) || attempt == deleteTransactionAttempts-1 {
+			return result, err
+		}
+		time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
+	}
+	return nil, errors.New("admission delete transaction retry exhausted")
+}
+
+// Kept as a small compatibility wrapper for package-local callers that only
+// need the transaction error. New code should use the result-bearing helper.
+func (s *Store) deleteAdmissionPersistedLocked(id string) error {
+	_, err := s.deleteAdmissionCascadePersistedLocked(id)
+	return err
 }

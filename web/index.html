@@ -7,9 +7,9 @@
     <meta name="description" content="CGU 原神大学：在提瓦特，探索你的学术天赋与冒险方向。" data-i18n-attr="content:home.metaDescription">
     <title data-i18n="home.metaTitle">CGU 原神大学 | China Genshin University</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css">
-    <script defer src="/assets/v1.5.7/i18n.js"></script>
-    <script defer src="/script.js"></script>
+    <link rel="stylesheet" href="/assets/v1.5.8/styles.css">
+    <script defer src="/assets/v1.5.8/i18n.js"></script>
+    <script defer src="/assets/v1.5.8/script.js"></script>
   </head>
   <body data-page="home">
     <a class="skip-link" href="#main-content" data-i18n="home.skip">跳到主要内容</a>
@@ -334,6 +334,7 @@
         <p class="dialog-intro" data-i18n="home.dialogIntro">留下你的联系方式，招生老师会在 3 个工作日内把申请指南寄给你。</p>
         <form class="apply-form" novalidate>
           <label><span data-i18n="home.formName">你的名字</span><input name="name" type="text" placeholder="旅行者姓名" data-i18n-attr="placeholder:home.formNamePlaceholder" required></label>
+          <label><span data-i18n="home.formEnglishName">英文名（用于学号，必填）</span><input name="englishName" type="text" maxlength="120" pattern="[A-Za-z][A-Za-z .'-]*" placeholder="例如 Lumine 或 Jean-Luc" data-i18n-attr="placeholder:home.formEnglishNamePlaceholder;title:home.formEnglishNameHelp" required></label>
           <label><span data-i18n="home.formEmail">电子邮箱</span><input name="email" type="email" placeholder="name@example.com" data-i18n-attr="placeholder:home.formEmailPlaceholder" required></label>
           <label><span data-i18n="home.formSchool">感兴趣的学院</span><select name="school"><option value="undecided" data-i18n="home.schoolUndecided">还在探索中</option><option value="wind" data-i18n="home.programWindTitle">风与自然科学</option><option value="contract" data-i18n="home.programContractTitle">契约与商业文明</option><option value="design" data-i18n="home.programDesignTitle">永恒与设计实践</option><option value="wisdom" data-i18n="home.programWisdomTitle">智慧与生命研究</option><option value="justice" data-i18n="home.programJusticeTitle">审判与机械文明</option><option value="flame" data-i18n="home.programFlameTitle">火与竞技生态</option><option value="polar" data-i18n="home.programPolarTitle">至冬研究与极地治理</option></select></label>
           <button class="button button-dark" type="submit"><span data-i18n="home.submitApplication">发送申请意向</span> <span aria-hidden="true">→</span></button>

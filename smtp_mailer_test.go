@@ -228,6 +228,23 @@ func TestMailboxPendingDeliveryCanRecoverAfterStaleAttempt(t *testing.T) {
 	}
 }
 
+func TestGenericMailboxRetryRejectsAdmissionOnboardingMessage(t *testing.T) {
+	store := NewStoreWithAdmin(testAdminUsername, testAdminPassword)
+	item := &MailboxMessage{
+		ID: "mail-admission-generic-retry", RequestKey: admissionApprovalRequestKey("application-generic-retry"),
+		DeliveryMode: mailboxDeliveryModeSMTP, DeliveryStatus: mailboxDeliveryFailed,
+		ExternalRecipient: "applicant@example.com",
+	}
+	store.mailbox = []*MailboxMessage{item}
+	retry, apiError := store.beginMailboxDeliveryWithConfirmation(item.ID, false)
+	if retry != nil || apiError == nil || apiError.Status != http.StatusConflict || apiError.Code != "admission_credentials_resend_required" {
+		t.Fatalf("generic admission retry = %#v, error = %#v", retry, apiError)
+	}
+	if item.DeliveryStatus != mailboxDeliveryFailed {
+		t.Fatalf("generic retry changed delivery state: %#v", item)
+	}
+}
+
 func TestConcurrentMailboxRetryIsRejectedWhileSending(t *testing.T) {
 	store := NewStoreWithAdminAndDomain(testAdminUsername, testAdminPassword, "students.cgu.edu.kg")
 	student, apiError := store.createStudent(StudentInput{
