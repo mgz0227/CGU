@@ -560,6 +560,7 @@ func TestStaticRoutes(t *testing.T) {
 	server := httptest.NewServer(NewServer(NewStoreWithAdmin(testAdminUsername, testAdminPassword), "web"))
 	defer server.Close()
 
+	const assetVersion = "v1.5.11"
 	for _, route := range []string{"/", "/login", "/login/", "/portal", "/portal/", "/admin", "/admin/", "/calendar", "/calendar/", "/catalog", "/catalog/", "/login.html", "/portal.html", "/admin.html", "/calendar.html", "/catalog.html"} {
 		response, err := http.Get(server.URL + route)
 		if err != nil {
@@ -573,18 +574,24 @@ func TestStaticRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.HasSuffix(route, "/") && !strings.Contains(string(body), `assets/v1.5.10`) && !strings.Contains(string(body), `href="/portal.css"`) && !strings.Contains(string(body), `href="/styles.css"`) {
-			t.Fatalf("slash route %s did not use root-relative assets", route)
+		bodyText := string(body)
+		if !strings.Contains(bodyText, "assets/"+assetVersion) {
+			t.Fatalf("static route %s did not use %s assets", route, assetVersion)
+		}
+		if strings.Contains(bodyText, "assets/v1.5.8") || strings.Contains(bodyText, `href="/styles.css"`) {
+			t.Fatalf("static route %s contains a stale or unversioned asset reference", route)
 		}
 	}
-	versionedAsset, err := http.Get(server.URL + "/assets/v1.5.10/portal.js")
-	if err != nil {
-		t.Fatal(err)
+	for _, asset := range []string{"calendar.css", "calendar.js", "catalog.css", "catalog.js", "i18n.js", "portal.css", "portal.js", "script.js", "styles.css"} {
+		versionedAsset, err := http.Get(server.URL + "/assets/" + assetVersion + "/" + asset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if versionedAsset.StatusCode != http.StatusOK || !strings.Contains(versionedAsset.Header.Get("Cache-Control"), "no-cache") {
+			t.Fatalf("versioned asset %s status = %d, cache %q", asset, versionedAsset.StatusCode, versionedAsset.Header.Get("Cache-Control"))
+		}
+		versionedAsset.Body.Close()
 	}
-	if versionedAsset.StatusCode != http.StatusOK {
-		t.Fatalf("versioned portal asset status = %d", versionedAsset.StatusCode)
-	}
-	versionedAsset.Body.Close()
 	asset, err := http.Get(server.URL + "/portal.js")
 	if err != nil {
 		t.Fatal(err)
