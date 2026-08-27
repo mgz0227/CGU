@@ -573,11 +573,11 @@ func TestStaticRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.HasSuffix(route, "/") && !strings.Contains(string(body), `assets/v1.5.8`) && !strings.Contains(string(body), `href="/portal.css"`) && !strings.Contains(string(body), `href="/styles.css"`) {
+		if strings.HasSuffix(route, "/") && !strings.Contains(string(body), `assets/v1.5.10`) && !strings.Contains(string(body), `href="/portal.css"`) && !strings.Contains(string(body), `href="/styles.css"`) {
 			t.Fatalf("slash route %s did not use root-relative assets", route)
 		}
 	}
-	versionedAsset, err := http.Get(server.URL + "/assets/v1.5.8/portal.js")
+	versionedAsset, err := http.Get(server.URL + "/assets/v1.5.10/portal.js")
 	if err != nil {
 		t.Fatal(err)
 	}

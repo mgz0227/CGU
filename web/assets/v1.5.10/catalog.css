@@ -1,0 +1,42 @@
+.catalog-header { color: var(--ink); background: var(--paper); border-bottom: 1px solid var(--line); }
+.catalog-header-inner { display: flex; align-items: center; min-height: 92px; gap: 30px; }
+.catalog-header .brand-mark { border-color: var(--ink); }
+.catalog-header .brand-orbit { border-color: var(--gold); }
+.catalog-header .brand-orbit-two { border-color: var(--mint); }
+.catalog-header .brand-star { background: var(--coral); }
+.catalog-nav { display: flex; align-items: center; gap: 24px; margin-left: auto; color: var(--ink-soft); font-size: 13px; }
+.catalog-nav a { padding: 8px 0; border-bottom: 2px solid transparent; }
+.catalog-nav a:hover, .catalog-nav a.is-active { color: var(--ink); border-bottom-color: var(--gold); }
+.catalog-language { color: var(--ink); }
+.catalog-main { min-height: calc(100vh - 149px); padding: 92px 0 120px; background: var(--paper); }
+.catalog-heading { display: flex; align-items: end; justify-content: space-between; gap: 28px; padding-bottom: 38px; border-bottom: 1px solid var(--line); }
+.catalog-heading h1 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 58px; font-weight: 400; line-height: 1.18; }
+.catalog-heading p:last-child { max-width: 650px; margin: 17px 0 0; color: var(--ink-soft); font-size: 14px; }
+.catalog-alert { margin: 22px 0 0; padding: 13px 16px; color: var(--ink); background: var(--paper-deep); border-left: 3px solid var(--coral); font-size: 13px; }
+.catalog-filters { display: flex; gap: 14px; margin: 28px 0 14px; }
+.catalog-search { display: flex; align-items: center; flex: 1; gap: 10px; min-height: 48px; padding: 0 14px; border: 1px solid var(--line); background: var(--white); }
+.catalog-search span { color: var(--coral); font-size: 24px; line-height: 1; }
+.catalog-search input, .catalog-filters select { width: 100%; min-height: 44px; border: 0; outline: 0; color: var(--ink); background: transparent; }
+.catalog-filters select { width: 220px; padding: 0 12px; border: 1px solid var(--line); background: var(--white); }
+.catalog-table-wrap { overflow-x: auto; border: 1px solid var(--line); background: var(--white); }
+.catalog-table { min-width: 760px; }
+.catalog-table td small { display: block; max-width: 330px; margin-top: 4px; color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
+.handbook-band { display: flex; align-items: end; justify-content: space-between; gap: 32px; margin-top: 78px; padding: 40px; color: var(--paper); background: var(--ink); }
+.handbook-band h2 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 40px; font-weight: 400; }
+.handbook-band p:last-child { max-width: 760px; margin: 18px 0 0; color: rgba(244,240,231,.75); font-size: 14px; line-height: 1.9; }
+.handbook-band .eyebrow { color: var(--gold-soft); }
+.handbook-band .button-dark { color: var(--ink); background: var(--gold-soft); white-space: nowrap; }
+@media (max-width: 760px) {
+  .catalog-header-inner { min-height: 72px; gap: 12px; }
+  .catalog-nav { gap: 10px; font-size: 11px; }
+  .catalog-nav a:nth-child(1), .catalog-nav a:nth-child(3) { display: none; }
+  .catalog-main { padding: 62px 0 82px; }
+  .catalog-heading { align-items: start; flex-direction: column; }
+  .catalog-heading h1 { font-size: 42px; }
+  .catalog-heading .button { width: 100%; }
+  .catalog-filters { flex-direction: column; }
+  .catalog-filters select { width: 100%; }
+  .handbook-band { align-items: start; flex-direction: column; padding: 28px; }
+  .handbook-band h2 { font-size: 32px; }
+  .handbook-band .button { width: 100%; }
+}
